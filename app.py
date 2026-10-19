@@ -5,8 +5,8 @@ import re
 import json
 import os
 import time
-import io
-import zipfile
+import base64
+import streamlit.components.v1 as components
 from google import genai
 from google.genai import types
 
@@ -76,10 +76,10 @@ def extraer_datos_inmueble(url):
         og_desc = meta_d["content"].strip()
 
     for bloque in soup.find_all(lambda t: any(cl in str(t.get('class', '')).lower() or cl in str(t.get('id', '')).lower() 
-                                            for cl in ['perfil-asesor', 'agent-box', 'agent-info', 'author-box'])):
+                                            for cl in ['perfil-asesor', 'agent-box', 'agent-info', 'author-box', 'related-properties'])):
         bloque.extract()
 
-    for s in soup(["script", "style", "noscript", "nav", "footer", "header"]):
+    for s in soup(["script", "style", "noscript", "nav", "footer", "header", "form"]):
         s.extract()
 
     contenedor_desc = (
@@ -91,6 +91,11 @@ def extraer_datos_inmueble(url):
         texto_principal = contenedor_desc.get_text(separator="\n", strip=True)
     else:
         texto_principal = soup.get_text(separator="\n", strip=True)
+
+    # CORTE INMEDIATO A PARTIR DEL ID DE PROPIEDAD (hmor-, hmov-, id:)
+    patron_corte = re.search(r'(?i)\b(?:id\s*:\s*hmo[a-z0-9_-]+|hmo[rv]-[0-9]+|id\s+de\s+la\s+propiedad)', texto_principal)
+    if patron_corte:
+        texto_principal = texto_principal[:patron_corte.start()].strip()
 
     patrones_asesor = [
         "avatar", "logo", "icon", "perfil-", "asesor", "/agent/", "/agents/", 
@@ -157,11 +162,20 @@ def armar_ficha_local(og_title, og_desc, body_text, asesor_nombre):
 
     lineas = [l.strip() for l in body_text.split("\n") if len(l.strip()) > 3]
     caracteristicas = []
-    descartar = ["next", "inmobiliaria", "contacto", "teléfono", "whatsapp", "descripción", "derechos", "aviso", "buscar", "precio"]
+    
+    # LISTA NEGRA DE PALABRAS RESIDUALES
+    descartar = [
+        "next", "inmobiliaria", "contacto", "teléfono", "whatsapp", "descripción", 
+        "derechos", "aviso", "buscar", "precio", "id:", "hmor-", "hmov-", 
+        "contactar vía", "enviar", "propiedades relacionadas", "completa tus datos", 
+        "cancelar", "aceptar", "ver en mapa", "características", "medios baños"
+    ]
     
     for l in lineas:
         l_low = l.lower()
-        if not any(d in l_low for d in descartar) and not l.startswith("$") and len(l) < 140:
+        if any(d in l_low for d in descartar):
+            continue
+        if not l.startswith("$") and len(l) < 140:
             l_limpia = normalizar_oracion(l)
             if l_limpia not in caracteristicas and not l_limpia.lower().startswith("local comercial en renta"):
                 caracteristicas.append(l_limpia)
@@ -208,14 +222,15 @@ def procesar_con_ia(url, og_title, og_desc, body_text, asesor_nombre):
 
     Asesor: {asesor_nombre}
 
-    REGLAS ESTRICTAS DE REDACCIÓN Y ORTOGRAFÍA:
-    1. PROHIBIDAS LAS MAYÚSCULAS SOSTENIDAS: Nunca escribas frases completas en mayúsculas como "ALTA AFLUENCIA VEHICULAR" o "LUZ 110 Y TRIFASICA". Usa mayúscula únicamente en la primera letra de la oración y en nombres propios (ej: "Alta afluencia vehicular", "Luz 110 y trifásica", "Sobre Blvd. Morelos").
-    2. PRIMERA LÍNEA OBLIGATORIA:
+    REGLAS ESTRICTAS DE REDACCIÓN Y EXCLUSIÓN:
+    1. PROHIBIDO INCLUIR IDS Y FORMULARIOS: NUNCA incluyas IDs de propiedad (como "Id: hmor-...", "hmov-..."), nombres de asesores del portal, correos electrónicos, teléfonos ajenos, botones como "Enviar", "Cancelar", "Aceptar", "Ver en mapa", ni "Propiedades relacionadas". Corta cualquier información a partir de ahí.
+    2. PROHIBIDAS LAS MAYÚSCULAS SOSTENIDAS: Nunca escribas frases completas en mayúsculas como "ALTA AFLUENCIA VEHICULAR" o "LUZ 110 Y TRIFASICA". Usa mayúscula únicamente en la primera letra de la oración y en nombres propios (ej: "Alta afluencia vehicular", "Luz 110 y trifásica", "Sobre Blvd. Morelos").
+    3. PRIMERA LÍNEA OBLIGATORIA:
        "[Tipo de inmueble] en [operación] en colonia [Nombre de la Colonia]"
        (Ejemplo exacto: "Local comercial en renta en colonia Constitución" o "Casa en venta en colonia Jardín Real"). Primera letra con mayúscula y nombre de colonia como nombre propio.
-    3. CERO ALUCINACIONES: Incluye ABSOLUTAMENTE TODOS los puntos del anuncio (luz 110 y trifásica, m² de terraza, estacionamientos, bodega con lavaplatos, si es más IVA o requiere factura, plusvalía, etc.).
-    4. SIN TELÉFONO NI ENLACES DE WHATSAPP.
-    5. CIERRE FORMAL:
+    4. CERO ALUCINACIONES: Incluye ABSOLUTAMENTE TODOS los puntos válidos del anuncio (luz 110 y trifásica, m² de terraza, estacionamientos, bodega con lavaplatos, si es más IVA o requiere factura, plusvalía, etc.).
+    5. SIN TELÉFONO NI ENLACES DE WHATSAPP.
+    6. CIERRE FORMAL:
        📩 *Para más información, citas o disponibilidad, envía un mensaje directo.*
        *{asesor_nombre}* - Next Bienes Raíces
 
@@ -267,6 +282,8 @@ def procesar_con_ia(url, og_title, og_desc, body_text, asesor_nombre):
                 copy = re.sub(r'https?://[^\s]+', '', copy)
                 copy = re.sub(r'\bwa\.me[^\s]*', '', copy)
                 copy = re.sub(r'\b\d{10}\b', '', copy)
+                # Limpieza de seguridad post-IA por si se filtró algún ID
+                copy = re.sub(r'(?i)\n.*(?:id\s*:\s*hmo[a-z0-9_-]+|hmor-[0-9]+|hmov-[0-9]+).*', '', copy)
                 data["copy_publicitario"] = copy.strip()
             return data
         except Exception:
@@ -276,7 +293,7 @@ def procesar_con_ia(url, og_title, og_desc, body_text, asesor_nombre):
     return armar_ficha_local(og_title, og_desc, body_text, asesor_nombre)
 
 # ==========================================
-# GESTIÓN DE DESCARGAS (MEMORIA BUFFER)
+# DESCARGA PROXY (CONVERSIÓN A BYTES)
 # ==========================================
 
 @st.cache_data(show_spinner=False)
@@ -289,16 +306,6 @@ def descargar_foto_bytes(url):
         pass
     return None
 
-def empaquetar_fotos_zip(urls_fotos, nombre_inmueble):
-    buf_zip = io.BytesIO()
-    with zipfile.ZipFile(buf_zip, "w", zipfile.ZIP_DEFLATED) as zip_file:
-        for i, url in enumerate(urls_fotos):
-            contenido = descargar_foto_bytes(url)
-            if contenido:
-                zip_file.writestr(f"Foto_{i + 1}.jpg", contenido)
-    buf_zip.seek(0)
-    return buf_zip.getvalue()
-
 # ==========================================
 # INICIALIZACIÓN DE ESTADO PERSISTENTE
 # ==========================================
@@ -307,8 +314,8 @@ if "datos_extraidos" not in st.session_state:
     st.session_state.datos_extraidos = None
 if "fotos_extraidas" not in st.session_state:
     st.session_state.fotos_extraidas = []
-if "zip_bytes" not in st.session_state:
-    st.session_state.zip_bytes = None
+if "descargar_ahora" not in st.session_state:
+    st.session_state.descargar_ahora = False
 
 # ==========================================
 # INTERFAZ STREAMLIT
@@ -336,7 +343,7 @@ if st.button("🔍 Extraer Fotos y Generar Ficha", type="primary"):
                 
                 st.session_state.datos_extraidos = datos
                 st.session_state.fotos_extraidas = fotos
-                st.session_state.zip_bytes = None  # Reset para generar con las nuevas fotos
+                st.session_state.descargar_ahora = False
                 st.success(f"¡Extracción exitosa! Se encontraron {len(fotos)} fotografías del inmueble.")
             except Exception as e:
                 st.error(f"Error al analizar el inmueble: {e}")
@@ -352,24 +359,46 @@ if st.session_state.datos_extraidos and st.session_state.fotos_extraidas:
     col_descargas, col_copy = st.columns([1, 1])
 
     with col_descargas:
-        st.subheader(f"🖼️ Fotografías del Inmueble ({len(fotos)})")
+        st.subheader(f"🖼️ Fotografías Encontradas ({len(fotos)})")
         
-        # Preparación del ZIP en un clic garantizado
-        if st.session_state.zip_bytes is None:
-            with st.spinner("Preparando archivo de descarga para todas las fotos..."):
-                st.session_state.zip_bytes = empaquetar_fotos_zip(fotos, datos.get("tipo_inmueble", "Fotos"))
+        if st.button("🚀 Descargar Todas las Fotos Sueltas (Sin ZIP)", type="primary", use_container_width=True):
+            st.session_state.descargar_ahora = True
 
-        colonia_archivo = re.sub(r'[\\/*?:\"<>|]', '', str(datos.get('colonia', 'Propiedad'))).strip()
-        nombre_zip = f"Fotos_{datos.get('tipo_inmueble', 'Inmueble')}_{colonia_archivo}.zip"
+        if st.session_state.descargar_ahora:
+            with st.spinner("Descargando imágenes individuales a tu equipo..."):
+                lista_archivos = []
+                for i, u in enumerate(fotos):
+                    b = descargar_foto_bytes(u)
+                    if b:
+                        b64 = base64.b64encode(b).decode('utf-8')
+                        lista_archivos.append({
+                            "nombre": f"Foto_{i + 1}.jpg",
+                            "data": f"data:image/jpeg;base64,{b64}"
+                        })
 
-        st.download_button(
-            label=f"📦 Descargar Todas las Fotos en 1 Clic ({len(fotos)} fotos)",
-            data=st.session_state.zip_bytes,
-            file_name=nombre_zip,
-            mime="application/zip",
-            type="primary",
-            use_container_width=True
-        )
+                payload_json = json.dumps(lista_archivos)
+
+                js_script = f"""
+                <div id="status_descarga" style="padding: 10px; background-color: #f0fdf4; border: 1px solid #bbf7d0; border-radius: 8px; color: #166534; font-size: 14px;">
+                    ⏳ Descargando {len(lista_archivos)} imágenes individuales a tu carpeta de descargas...
+                </div>
+                <script>
+                (async function() {{
+                    const items = {payload_json};
+                    for (let i = 0; i < items.length; i++) {{
+                        const link = document.createElement('a');
+                        link.href = items[i].data;
+                        link.download = items[i].nombre;
+                        document.body.appendChild(link);
+                        link.click();
+                        document.body.removeChild(link);
+                        await new Promise(res => setTimeout(res, 350));
+                    }}
+                    document.getElementById('status_descarga').innerHTML = '✅ <b>¡Descarga completada!</b> Revisa tu carpeta de Descargas.';
+                }})();
+                </script>
+                """
+                components.html(js_script, height=90)
 
         st.markdown("---")
         st.markdown("##### O descarga manual foto por foto:")
