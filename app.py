@@ -23,7 +23,35 @@ ASESORES = {
 }
 
 # ==========================================
-# EXTRACCIÓN Y SCRAPING MEJORADO
+# UTILIDAD DE CAPITALIZACIÓN FORMAL
+# ==========================================
+
+def normalizar_oracion(texto):
+    """Convierte texto en MAYÚSCULAS sostenidas a formato de oración formal."""
+    t = texto.strip()
+    if not t:
+        return ""
+    # Si todo o casi todo viene en mayúsculas, lo pasamos a minúsculas y capitalizamos la primera letra
+    if t.isupper() or sum(1 for c in t if c.isupper()) > len(t) * 0.6:
+        t = t.lower()
+        t = t[0].upper() + t[1:]
+    # Respetar nombres propios comunes
+    reemplazos = {
+        r'\bmorelos\b': 'Morelos',
+        r'\bconstitucion\b': 'Constitución',
+        r'\bhermosillo\b': 'Hermosillo',
+        r'\bsonora\b': 'Sonora',
+        r'\bmexico\b': 'México',
+        r'\bblvd\.?\b': 'Blvd.',
+        r'\biva\b': 'IVA',
+        r'\bm2\b': 'm²'
+    }
+    for patron, repl in reemplazos.items():
+        t = re.sub(patron, repl, t, flags=re.IGNORECASE)
+    return t
+
+# ==========================================
+# EXTRACCIÓN Y SCRAPING
 # ==========================================
 
 def extraer_datos_inmueble(url):
@@ -94,52 +122,52 @@ def extraer_datos_inmueble(url):
     return og_title, og_desc, texto_principal, imagenes
 
 # ==========================================
-# PARSEADOR LOCAL DE RESPALDO (SIN ALUCINACIONES)
+# PARSEADOR LOCAL CON ORTOGRAFÍA LIMPIA
 # ==========================================
 
 def armar_ficha_local(og_title, og_desc, body_text, asesor_nombre):
-    texto = f"{og_title}\n{og_desc}\n{body_text}"
-    texto_lower = texto.lower()
+    texto_combinado = f"{og_title}\n{og_desc}\n{body_text}"
+    texto_lower = texto_combinado.lower()
 
-    # 1. Tipo de inmueble
-    tipo = "local comercial"
-    for t in ["local comercial", "departamento", "oficina", "casa", "bodega", "terreno"]:
-        if t in texto_lower:
-            tipo = t
+    tipo = "Local comercial"
+    for t_raw, t_nom in [("local comercial", "Local comercial"), ("departamento", "Departamento"), 
+                         ("oficina", "Oficina"), ("casa", "Casa"), ("bodega", "Bodega"), ("terreno", "Terreno")]:
+        if t_raw in texto_lower:
+            tipo = t_nom
             break
 
-    # 2. Operación
     operacion = "renta" if "renta" in texto_lower else "venta"
 
-    # 3. Colonia
-    colonia = "constitucion"
-    col_match = re.search(r'(?:colonia|col\.?)\s+([A-Za-zÁÉÍÓÚñáéíóú\s]+?)(?:\n|,|\.)', texto, re.I)
+    colonia = "Constitución"
+    col_match = re.search(r'(?:colonia|col\.?)\s+([A-Za-zÁÉÍÓÚñáéíóú\s]+?)(?:\n|,|\.)', texto_combinado, re.I)
     if col_match:
-        colonia = col_match.group(1).strip().lower()
+        colonia = col_match.group(1).strip().title()
 
-    # 4. Precio
-    p_match = re.search(r'\$\s*([0-9]{1,3}(?:,[0-9]{3})+)', texto)
+    p_match = re.search(r'\$\s*([0-9]{1,3}(?:,[0-9]{3})+)', texto_combinado)
     precio = f"${p_match.group(1)}" if p_match else ""
 
-    # Extraer líneas de características reales
     lineas = [l.strip() for l in body_text.split("\n") if len(l.strip()) > 3]
     caracteristicas = []
-    palabras_filtro = ["next", "inmobiliaria", "contacto", "teléfono", "whatsapp", "derechos", "aviso", "privacidad", "buscar"]
+    descartar = ["next", "inmobiliaria", "contacto", "teléfono", "whatsapp", "descripción", "derechos", "aviso", "buscar", "precio"]
     
     for l in lineas:
-        if not any(pf in l.lower() for pf in palabras_filtro) and len(l) < 120:
-            if l not in caracteristicas and not l.startswith("$"):
-                caracteristicas.append(l)
+        l_low = l.lower()
+        if not any(d in l_low for d in descartar) and not l.startswith("$") and len(l) < 140:
+            l_limpia = normalizar_oracion(l)
+            if l_limpia not in caracteristicas and not l_limpia.lower().startswith("local comercial en renta"):
+                caracteristicas.append(l_limpia)
 
+    # Armar estructura formal con saltos limpios
     copy = f"{tipo} en {operacion} en colonia {colonia}\n\n"
+    
     if precio:
         copy += f"💰 *Precio:* {precio} MXN"
         if "iva" in texto_lower:
             copy += " (más IVA, se factura)"
         copy += "\n\n"
 
-    copy += "✨ *Características y Detalles:*\n"
-    for c in caracteristicas[:12]:
+    copy += "✨ *Características y Distribución:*\n"
+    for c in caracteristicas:
         copy += f"• {c}\n"
 
     copy += f"\n📩 *Para más información, citas o disponibilidad, envía un mensaje directo.*\n*{asesor_nombre}* - Next Bienes Raíces"
@@ -153,71 +181,72 @@ def armar_ficha_local(og_title, og_desc, body_text, asesor_nombre):
     }
 
 # ==========================================
-# ESTRUCTURACIÓN CON IA CON DIAGNÓSTICO
+# ESTRUCTURACIÓN CON IA (FORMATO PROFESIONAL)
 # ==========================================
 
 def procesar_con_ia(url, og_title, og_desc, body_text, asesor_nombre):
     if not API_KEY:
-        st.warning("⚠️ No se detectó GEMINI_API_KEY en Secrets. Se usó el generador local.")
         return armar_ficha_local(og_title, og_desc, body_text, asesor_nombre)
 
     client = genai.Client(api_key=API_KEY)
     prompt = f"""
-    Eres un asesor inmobiliario profesional. Extrae TODA la información real del inmueble para Facebook Marketplace sin omitir ningún detalle.
+    Eres un asesor inmobiliario profesional de élite. Redacta una ficha publicitaria formal para Facebook Marketplace.
 
+    DATOS DE LA PROPIEDAD:
     URL: {url}
     Título: {og_title}
     Descripción: {og_desc}
-    Texto:
+    Texto completo:
     {body_text[:6000]}
 
     Asesor: {asesor_nombre}
 
-    REGLAS:
-    1. PRIMERA LÍNEA: "[tipo_inmueble] en [operacion] en colonia [colonia]" (en minúsculas).
-    2. CERO ALUCINACIONES: Incluye TODOS los detalles que vengan (estacionamientos, luz 110/trifásica, m² de terraza, lavaplatos, bodega, si es más IVA, etc.).
-    3. SIN TELÉFONO NI ENLACES DE WHATSAPP.
-    4. CIERRE OBLIGATORIO:
-       📩 *Para más información y citas, envía un mensaje directo.*
+    REGLAS ESTRICTAS DE REDACCIÓN Y ORTOGRAFÍA:
+    1. PROHIBIDAS LAS MAYÚSCULAS SOSTENIDAS: Nunca escribas frases completas en mayúsculas como "ALTA AFLUENCIA VEHICULAR" o "LUZ 110 Y TRIFASICA". Usa mayúscula únicamente en la primera letra de la oración y en nombres propios (ej: "Alta afluencia vehicular", "Luz 110 y trifásica", "Sobre Blvd. Morelos").
+    2. PRIMERA LÍNEA OBLIGATORIA:
+       "[Tipo de inmueble] en [operación] en colonia [Nombre de la Colonia]"
+       (Ejemplo exacto: "Local comercial en renta en colonia Constitución" o "Casa en venta en colonia Jardín Real"). Primera letra con mayúscula y nombre de colonia como nombre propio.
+    3. CERO ALUCINACIONES: Incluye ABSOLUTAMENTE TODOS los puntos del anuncio (luz 110 y trifásica, m² de terraza, estacionamientos, bodega con lavaplatos, si es más IVA o requiere factura, plusvalía, etc.).
+    4. SIN TELÉFONO NI ENLACES DE WHATSAPP.
+    5. CIERRE FORMAL:
+       📩 *Para más información, citas o disponibilidad, envía un mensaje directo.*
        *{asesor_nombre}* - Next Bienes Raíces
 
-    Estructura esperada:
-    [tipo_inmueble] en [operacion] en colonia [colonia]
+    ESTRUCTURA EXACTA DE 'copy_publicitario':
+    [Tipo de inmueble] en [operación] en colonia [Nombre de la Colonia]
 
-    💰 *Precio:* [PRECIO] [MONEDA] [IVA si aplica]
+    💰 *Precio:* [Precio] [Moneda] [Aclaración de IVA si aplica]
 
-    📍 *Ubicación y Zona:*
-    (Afluencia, vialidades, plusvalía)
+    📍 *Ubicación y Entorno:*
+    (Mencionar vialidades principales, afluencia y plusvalía)
 
     📐 *Medidas y Distribución:*
-    • Superficie
+    • Superficie de terreno / construcción (si se indican)
     • Estacionamientos
     • Baños
     • Espacios especiales (terraza, bodega, etc.)
 
-    ⚡ *Instalaciones y Servicios:*
-    • Tipo de luz / equipamiento
+    ⚡ *Instalaciones y Equipamiento:*
+    • Detalles de luz y suministros
 
-    📝 *Condiciones:*
-    • Facturación o requerimientos
+    📝 *Condiciones y Notas:*
+    • Facturación y detalles adicionales
 
-    📩 *Para más información y citas, envía un mensaje directo.*
+    📩 *Para más información, citas o disponibilidad, envía un mensaje directo.*
     *{asesor_nombre}* - Next Bienes Raíces
 
-    Devuelve un JSON válido:
+    Devuelve un JSON estrictamente válido:
     {{
-      "colonia": "...",
-      "tipo_inmueble": "...",
-      "operacion": "...",
-      "precio": "...",
+      "colonia": "Constitución",
+      "tipo_inmueble": "Local comercial",
+      "operacion": "renta",
+      "precio": "$18,000",
       "moneda": "MXN",
       "copy_publicitario": "..."
     }}
     """
 
     modelos = ['gemini-2.5-flash', 'gemini-1.5-flash']
-    ultimo_error = ""
-
     for mod in modelos:
         try:
             res = client.models.generate_content(
@@ -233,12 +262,10 @@ def procesar_con_ia(url, og_title, og_desc, body_text, asesor_nombre):
                 copy = re.sub(r'\b\d{10}\b', '', copy)
                 data["copy_publicitario"] = copy.strip()
             return data
-        except Exception as e:
-            ultimo_error = str(e)
+        except Exception:
             time.sleep(1)
             continue
 
-    st.info(f"ℹ️ Conexión con IA en espera ({ultimo_error[:100]}...). Se activó el generador local automático.")
     return armar_ficha_local(og_title, og_desc, body_text, asesor_nombre)
 
 # ==========================================
@@ -257,7 +284,7 @@ if "descargar_ahora" not in st.session_state:
 # ==========================================
 
 st.title("📥 Descargador de Fotos y Ficha para Marketplace")
-st.write("Extrae todas las fotos en alta resolución y genera el copy completo sin datos de contacto que puedan penalizar la publicación:")
+st.write("Extrae todas las fotos en alta resolución y genera el copy formal sin teléfonos ni mayúsculas invasivas:")
 
 col_url, col_as = st.columns([2, 1])
 with col_url:
@@ -271,7 +298,7 @@ if st.button("🔍 Extraer Fotos y Generar Ficha", type="primary"):
     if not url_input.strip().startswith("http"):
         st.error("Por favor ingresa un enlace válido.")
     else:
-        with st.spinner("Analizando portal y extrayendo todos los datos del inmueble..."):
+        with st.spinner("Analizando portal y estructurando información profesional..."):
             try:
                 og_t, og_d, b_txt, fotos = extraer_datos_inmueble(url_input.strip())
                 datos = procesar_con_ia(url_input.strip(), og_t, og_d, b_txt, info_asesor['nombre'])
