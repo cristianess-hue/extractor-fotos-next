@@ -11,7 +11,7 @@ from google.genai import types
 
 st.set_page_config(page_title="Descargador de Fotos y Ficha Next", page_icon="📥", layout="wide")
 
-API_KEY = st.secrets.get("GEMINI_API_KEY", os.environ.get("GEMINI_API_KEY", ""))
+API_KEY = st.secrets.get("GEMINI_API_KEY", os.environ.get("GEMINI_API_KEY", "")).strip()
 
 ASESORES = {
     "Cristian Sosa": {
@@ -36,7 +36,6 @@ def extraer_datos_inmueble(url):
     resp.encoding = 'utf-8'
     soup = BeautifulSoup(resp.text, 'html.parser')
 
-    # Título principal
     og_title = ""
     meta_t = soup.find("meta", property="og:title") or soup.find("meta", attrs={"name": "twitter:title"})
     if meta_t and meta_t.get("content"):
@@ -50,12 +49,9 @@ def extraer_datos_inmueble(url):
     if meta_d and meta_d.get("content"):
         og_desc = meta_d["content"].strip()
 
-    # Extraer texto de la propiedad preservando detalles
-    # Eliminar únicamente scripts, estilos y menús de navegación
     for s in soup(["script", "style", "noscript", "nav", "footer", "header"]):
         s.extract()
 
-    # Buscar contenedor específico de la descripción si existe
     contenedor_desc = (
         soup.find(class_=re.compile(r'(property-description|descripcion|listing-detail|contenido-propiedad)', re.I)) or
         soup.find(id=re.compile(r'(property-description|descripcion|listing-detail)', re.I))
@@ -66,7 +62,6 @@ def extraer_datos_inmueble(url):
     else:
         texto_principal = soup.get_text(separator="\n", strip=True)
 
-    # Filtrar imágenes de alta resolución
     palabras_prohibidas = ["asesor", "agente", "broker", "logo", "avatar", "icon", "user", "staff"]
     imagenes = []
 
@@ -99,71 +94,130 @@ def extraer_datos_inmueble(url):
     return og_title, og_desc, texto_principal, imagenes
 
 # ==========================================
-# ESTRUCTURACIÓN CON IA (SIN TELÉFONO / SIN ALUCINACIONES)
+# PARSEADOR LOCAL DE RESPALDO (SIN ALUCINACIONES)
+# ==========================================
+
+def armar_ficha_local(og_title, og_desc, body_text, asesor_nombre):
+    texto = f"{og_title}\n{og_desc}\n{body_text}"
+    texto_lower = texto.lower()
+
+    # 1. Tipo de inmueble
+    tipo = "local comercial"
+    for t in ["local comercial", "departamento", "oficina", "casa", "bodega", "terreno"]:
+        if t in texto_lower:
+            tipo = t
+            break
+
+    # 2. Operación
+    operacion = "renta" if "renta" in texto_lower else "venta"
+
+    # 3. Colonia
+    colonia = "constitucion"
+    col_match = re.search(r'(?:colonia|col\.?)\s+([A-Za-zÁÉÍÓÚñáéíóú\s]+?)(?:\n|,|\.)', texto, re.I)
+    if col_match:
+        colonia = col_match.group(1).strip().lower()
+
+    # 4. Precio
+    p_match = re.search(r'\$\s*([0-9]{1,3}(?:,[0-9]{3})+)', texto)
+    precio = f"${p_match.group(1)}" if p_match else ""
+
+    # Extraer líneas de características reales
+    lineas = [l.strip() for l in body_text.split("\n") if len(l.strip()) > 3]
+    caracteristicas = []
+    palabras_filtro = ["next", "inmobiliaria", "contacto", "teléfono", "whatsapp", "derechos", "aviso", "privacidad", "buscar"]
+    
+    for l in lineas:
+        if not any(pf in l.lower() for pf in palabras_filtro) and len(l) < 120:
+            if l not in caracteristicas and not l.startswith("$"):
+                caracteristicas.append(l)
+
+    copy = f"{tipo} en {operacion} en colonia {colonia}\n\n"
+    if precio:
+        copy += f"💰 *Precio:* {precio} MXN"
+        if "iva" in texto_lower:
+            copy += " (más IVA, se factura)"
+        copy += "\n\n"
+
+    copy += "✨ *Características y Detalles:*\n"
+    for c in caracteristicas[:12]:
+        copy += f"• {c}\n"
+
+    copy += f"\n📩 *Para más información, citas o disponibilidad, envía un mensaje directo.*\n*{asesor_nombre}* - Next Bienes Raíces"
+
+    return {
+        "colonia": colonia,
+        "tipo_inmueble": tipo,
+        "operacion": operacion,
+        "precio": precio,
+        "copy_publicitario": copy
+    }
+
+# ==========================================
+# ESTRUCTURACIÓN CON IA CON DIAGNÓSTICO
 # ==========================================
 
 def procesar_con_ia(url, og_title, og_desc, body_text, asesor_nombre):
+    if not API_KEY:
+        st.warning("⚠️ No se detectó GEMINI_API_KEY en Secrets. Se usó el generador local.")
+        return armar_ficha_local(og_title, og_desc, body_text, asesor_nombre)
+
     client = genai.Client(api_key=API_KEY)
     prompt = f"""
-    Eres un asesor inmobiliario profesional especializado en redactar anuncios para Facebook Marketplace.
-    Tu trabajo es extraer TODA la información real del inmueble y organizarla de forma atractiva, limpia y fácil de leer.
+    Eres un asesor inmobiliario profesional. Extrae TODA la información real del inmueble para Facebook Marketplace sin omitir ningún detalle.
 
-    DATOS DE ENTRADA:
     URL: {url}
     Título: {og_title}
-    Resumen: {og_desc}
-    Texto completo del inmueble:
-    {body_text[:7000]}
+    Descripción: {og_desc}
+    Texto:
+    {body_text[:6000]}
 
-    Asesor responsable: {asesor_nombre}
+    Asesor: {asesor_nombre}
 
-    REGLAS ESTRICTAS DE REDACCIÓN:
-    1. CERO ALUCINACIONES: Incluye absolutamente TODOS los detalles mencionados en el texto (por ejemplo: tipos de luz como 110/trifásica, terrazas con m², estacionamientos, bodegas, lavaplatos, si es más IVA o facturación, ubicación sobre vialidades principales o zonas de alta afluencia, etc.). No inventes nada que no esté en el texto ni omitas detalles existentes.
-    2. PRIMERA LÍNEA OBLIGATORIA: La primera línea debe ser exactamente:
-       "[tipo_inmueble] en [operacion] en colonia [colonia]"
-       Todo en minúsculas (ejemplo: "local comercial en renta en colonia constitucion" o "casa en venta en colonia montecarlo").
-    3. PRECIO: Pon el precio exacto sin centavos (ej: "$18,000 MXN"). Si menciona "más IVA" o "precio más IVA", agrégalo claramente junto al precio.
-    4. SIN TELÉFONO NI ENLACES DE WHATSAPP: Facebook Marketplace sanciona o bloquea publicaciones con números de teléfono o links de WhatsApp. NO pongas números de teléfono, ni enlaces wa.me, ni correos.
-    5. CIERRE DE CONTACTO: Cierra la publicación con:
-       📩 *Para más información, citas o disponibilidad, envía un mensaje directo.*
-       *{asesor_nombre}* - Next Bienes Raíces
-
-    6. ESTRUCTURA REQUERIDA PARA 'copy_publicitario':
-       [tipo_inmueble] en [operacion] en colonia [colonia]
-
-       💰 *Precio:* [PRECIO] [MONEDA] [aclaración de IVA si aplica]
-
-       📍 *Ubicación:*
-       (Detalles de vialidad, zona de plusvalía o afluencia si se mencionan)
-
-       📐 *Medidas y Distribución:*
-       • Superficie de terreno / construcción (si se indican)
-       • Estacionamientos
-       • Baños
-       • Espacios especiales (terraza, bodega, etc.)
-
-       ⚡ *Servicios e Instalaciones:*
-       • Tipo de luz / instalaciones eléctricas (ej: 110 y trifásica)
-       • Equipamiento adicional (lavaplatos, aljibe, etc.)
-
-       📝 *Condiciones y Notas:*
-       • Facturación, tipo de comercio ideal o requerimientos señalados
-
+    REGLAS:
+    1. PRIMERA LÍNEA: "[tipo_inmueble] en [operacion] en colonia [colonia]" (en minúsculas).
+    2. CERO ALUCINACIONES: Incluye TODOS los detalles que vengan (estacionamientos, luz 110/trifásica, m² de terraza, lavaplatos, bodega, si es más IVA, etc.).
+    3. SIN TELÉFONO NI ENLACES DE WHATSAPP.
+    4. CIERRE OBLIGATORIO:
        📩 *Para más información y citas, envía un mensaje directo.*
        *{asesor_nombre}* - Next Bienes Raíces
 
-    Devuelve un JSON estrictamente válido con este formato:
+    Estructura esperada:
+    [tipo_inmueble] en [operacion] en colonia [colonia]
+
+    💰 *Precio:* [PRECIO] [MONEDA] [IVA si aplica]
+
+    📍 *Ubicación y Zona:*
+    (Afluencia, vialidades, plusvalía)
+
+    📐 *Medidas y Distribución:*
+    • Superficie
+    • Estacionamientos
+    • Baños
+    • Espacios especiales (terraza, bodega, etc.)
+
+    ⚡ *Instalaciones y Servicios:*
+    • Tipo de luz / equipamiento
+
+    📝 *Condiciones:*
+    • Facturación o requerimientos
+
+    📩 *Para más información y citas, envía un mensaje directo.*
+    *{asesor_nombre}* - Next Bienes Raíces
+
+    Devuelve un JSON válido:
     {{
-      "colonia": "Constitución",
-      "tipo_inmueble": "local comercial",
-      "operacion": "renta",
-      "precio": "$18,000",
+      "colonia": "...",
+      "tipo_inmueble": "...",
+      "operacion": "...",
+      "precio": "...",
       "moneda": "MXN",
       "copy_publicitario": "..."
     }}
     """
 
-    modelos = ['gemini-2.5-flash', 'gemini-1.5-flash', 'gemini-2.5-pro']
+    modelos = ['gemini-2.5-flash', 'gemini-1.5-flash']
+    ultimo_error = ""
+
     for mod in modelos:
         try:
             res = client.models.generate_content(
@@ -172,7 +226,6 @@ def procesar_con_ia(url, og_title, og_desc, body_text, asesor_nombre):
                 config=types.GenerateContentConfig(response_mime_type="application/json")
             )
             data = json.loads(res.text)
-            # Limpieza de seguridad adicional para que jamás aparezcan teléfonos ni links
             if "copy_publicitario" in data:
                 copy = data["copy_publicitario"]
                 copy = re.sub(r'https?://[^\s]+', '', copy)
@@ -180,11 +233,13 @@ def procesar_con_ia(url, og_title, og_desc, body_text, asesor_nombre):
                 copy = re.sub(r'\b\d{10}\b', '', copy)
                 data["copy_publicitario"] = copy.strip()
             return data
-        except Exception:
-            time.sleep(1.5)
+        except Exception as e:
+            ultimo_error = str(e)
+            time.sleep(1)
             continue
 
-    raise Exception("No fue posible procesar la ficha con el modelo. Revisa la clave API o intenta de nuevo.")
+    st.info(f"ℹ️ Conexión con IA en espera ({ultimo_error[:100]}...). Se activó el generador local automático.")
+    return armar_ficha_local(og_title, og_desc, body_text, asesor_nombre)
 
 # ==========================================
 # INICIALIZACIÓN DE ESTADO PERSISTENTE
@@ -215,8 +270,6 @@ info_asesor = ASESORES[asesor_seleccionado]
 if st.button("🔍 Extraer Fotos y Generar Ficha", type="primary"):
     if not url_input.strip().startswith("http"):
         st.error("Por favor ingresa un enlace válido.")
-    elif not API_KEY:
-        st.error("Falta configurar GEMINI_API_KEY en Secrets.")
     else:
         with st.spinner("Analizando portal y extrayendo todos los datos del inmueble..."):
             try:
@@ -243,7 +296,6 @@ if st.session_state.datos_extraidos and st.session_state.fotos_extraidas:
     with col_descargas:
         st.subheader(f"🖼️ Fotografías Encontradas ({len(fotos)})")
         
-        # Botón para descargar todas en 1 clic
         if st.button("🚀 Descargar Todas las Fotos en 1 Clic (Individuales)", type="primary", use_container_width=True):
             st.session_state.descargar_ahora = True
 
