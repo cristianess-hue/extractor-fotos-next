@@ -5,8 +5,8 @@ import re
 import json
 import os
 import time
-import base64
-import streamlit.components.v1 as components
+import io
+import zipfile
 from google import genai
 from google.genai import types
 
@@ -49,7 +49,7 @@ def normalizar_oracion(texto):
     return t
 
 # ==========================================
-# EXTRACCIÓN Y SCRAPING PRECISO
+# EXTRACCIÓN Y SCRAPING
 # ==========================================
 
 def extraer_datos_inmueble(url):
@@ -75,7 +75,6 @@ def extraer_datos_inmueble(url):
     if meta_d and meta_d.get("content"):
         og_desc = meta_d["content"].strip()
 
-    # Eliminar bloques específicos de asesores y navegación
     for bloque in soup.find_all(lambda t: any(cl in str(t.get('class', '')).lower() or cl in str(t.get('id', '')).lower() 
                                             for cl in ['perfil-asesor', 'agent-box', 'agent-info', 'author-box'])):
         bloque.extract()
@@ -93,7 +92,6 @@ def extraer_datos_inmueble(url):
     else:
         texto_principal = soup.get_text(separator="\n", strip=True)
 
-    # Filtro puntual: excluir logos y avatares de asesores sin tocar el dominio
     patrones_asesor = [
         "avatar", "logo", "icon", "perfil-", "asesor", "/agent/", "/agents/", 
         "cristian-sosa", "claudia-castro", "team-", "/staff/", "favicon"
@@ -101,14 +99,12 @@ def extraer_datos_inmueble(url):
 
     imagenes = []
 
-    # 1. Foto principal OpenGraph
     meta_img = soup.find("meta", property="og:image")
     if meta_img and meta_img.get("content"):
         img_url = meta_img["content"]
         if "http" in img_url and not any(p in img_url.lower() for p in patrones_asesor):
             imagenes.append(img_url)
 
-    # 2. Etiquetas img
     for img in soup.find_all("img"):
         src = img.get("src") or img.get("data-src") or img.get("data-lazy-src") or ""
         alt = (img.get("alt") or "").lower()
@@ -117,7 +113,6 @@ def extraer_datos_inmueble(url):
         if not src or any(p in src_lower for p in patrones_asesor) or any(p in alt for p in patrones_asesor):
             continue
         
-        # Debe pertenecer al contenido o listado de imágenes
         if any(term in src_lower for term in ["uploads", "listings", "propiedades", "images"]):
             full_src = re.sub(r'-[0-9]+x[0-9]+', '', src)
             if not full_src.startswith("http"):
@@ -125,7 +120,6 @@ def extraer_datos_inmueble(url):
             if full_src not in imagenes:
                 imagenes.append(full_src)
 
-    # 3. Expresión regular por si están incrustadas en galerías JS
     matches_raw = re.findall(r'https?://[^\s"\']+\.(?:jpe?g|png|webp)', resp.text, re.IGNORECASE)
     for m in matches_raw:
         m_lower = m.lower()
@@ -282,9 +276,10 @@ def procesar_con_ia(url, og_title, og_desc, body_text, asesor_nombre):
     return armar_ficha_local(og_title, og_desc, body_text, asesor_nombre)
 
 # ==========================================
-# DESCARGA PROXY (CONVERSIÓN A BYTES)
+# GESTIÓN DE DESCARGAS (MEMORIA BUFFER)
 # ==========================================
 
+@st.cache_data(show_spinner=False)
 def descargar_foto_bytes(url):
     try:
         r = requests.get(url, timeout=12, headers={"User-Agent": "Mozilla/5.0"})
@@ -294,6 +289,16 @@ def descargar_foto_bytes(url):
         pass
     return None
 
+def empaquetar_fotos_zip(urls_fotos, nombre_inmueble):
+    buf_zip = io.BytesIO()
+    with zipfile.ZipFile(buf_zip, "w", zipfile.ZIP_DEFLATED) as zip_file:
+        for i, url in enumerate(urls_fotos):
+            contenido = descargar_foto_bytes(url)
+            if contenido:
+                zip_file.writestr(f"Foto_{i + 1}.jpg", contenido)
+    buf_zip.seek(0)
+    return buf_zip.getvalue()
+
 # ==========================================
 # INICIALIZACIÓN DE ESTADO PERSISTENTE
 # ==========================================
@@ -302,8 +307,8 @@ if "datos_extraidos" not in st.session_state:
     st.session_state.datos_extraidos = None
 if "fotos_extraidas" not in st.session_state:
     st.session_state.fotos_extraidas = []
-if "descargar_ahora" not in st.session_state:
-    st.session_state.descargar_ahora = False
+if "zip_bytes" not in st.session_state:
+    st.session_state.zip_bytes = None
 
 # ==========================================
 # INTERFAZ STREAMLIT
@@ -331,7 +336,7 @@ if st.button("🔍 Extraer Fotos y Generar Ficha", type="primary"):
                 
                 st.session_state.datos_extraidos = datos
                 st.session_state.fotos_extraidas = fotos
-                st.session_state.descargar_ahora = False
+                st.session_state.zip_bytes = None  # Reset para generar con las nuevas fotos
                 st.success(f"¡Extracción exitosa! Se encontraron {len(fotos)} fotografías del inmueble.")
             except Exception as e:
                 st.error(f"Error al analizar el inmueble: {e}")
@@ -347,50 +352,28 @@ if st.session_state.datos_extraidos and st.session_state.fotos_extraidas:
     col_descargas, col_copy = st.columns([1, 1])
 
     with col_descargas:
-        st.subheader(f"🖼️ Fotografías Encontradas ({len(fotos)})")
+        st.subheader(f"🖼️ Fotografías del Inmueble ({len(fotos)})")
         
-        if st.button("🚀 Descargar Todas las Fotos en 1 Clic", type="primary", use_container_width=True):
-            st.session_state.descargar_ahora = True
+        # Preparación del ZIP en un clic garantizado
+        if st.session_state.zip_bytes is None:
+            with st.spinner("Preparando archivo de descarga para todas las fotos..."):
+                st.session_state.zip_bytes = empaquetar_fotos_zip(fotos, datos.get("tipo_inmueble", "Fotos"))
 
-        if st.session_state.descargar_ahora:
-            with st.spinner("Preparando descarga directa a tu carpeta de descargas..."):
-                lista_data_uris = []
-                for i, u in enumerate(fotos):
-                    b = descargar_foto_bytes(u)
-                    if b:
-                        b64 = base64.b64encode(b).decode('utf-8')
-                        lista_data_uris.append({
-                            "nombre": f"Foto_{i + 1}.jpg",
-                            "data": f"data:image/jpeg;base64,{b64}"
-                        })
+        colonia_archivo = re.sub(r'[\\/*?:\"<>|]', '', str(datos.get('colonia', 'Propiedad'))).strip()
+        nombre_zip = f"Fotos_{datos.get('tipo_inmueble', 'Inmueble')}_{colonia_archivo}.zip"
 
-                json_payload = json.dumps(lista_data_uris)
+        st.download_button(
+            label=f"📦 Descargar Todas las Fotos en 1 Clic ({len(fotos)} fotos)",
+            data=st.session_state.zip_bytes,
+            file_name=nombre_zip,
+            mime="application/zip",
+            type="primary",
+            use_container_width=True
+        )
 
-                js_script = f"""
-                <script>
-                const archivos = {json_payload};
-                async function guardarTodo() {{
-                    for (let i = 0; i < archivos.length; i++) {{
-                        const a = document.createElement('a');
-                        a.href = archivos[i].data;
-                        a.download = archivos[i].nombre;
-                        document.body.appendChild(a);
-                        a.click();
-                        document.body.removeChild(a);
-                        await new Promise(r => setTimeout(r, 200));
-                    }}
-                }}
-                guardarTodo();
-                </script>
-                <div style="padding: 10px; background-color: #f0fdf4; border: 1px solid #bbf7d0; border-radius: 8px; color: #166534; font-size: 14px;">
-                    ✅ <b>Descarga completada.</b> Revisa tu carpeta de Descargas.<br>
-                    <i>Si el navegador solicita confirmación para descargar varios archivos, presiona Permitir.</i>
-                </div>
-                """
-                components.html(js_script, height=90)
-
-        st.markdown("##### Descargas manuales individuales:")
-        with st.expander("Ver botones de descarga por foto", expanded=False):
+        st.markdown("---")
+        st.markdown("##### O descarga manual foto por foto:")
+        with st.expander("Ver botones individuales por fotografía", expanded=False):
             for i, f_url in enumerate(fotos):
                 foto_bytes = descargar_foto_bytes(f_url)
                 if foto_bytes:
