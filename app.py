@@ -6,6 +6,7 @@ import json
 import os
 import time
 import base64
+import unicodedata
 import streamlit.components.v1 as components
 from google import genai
 from google.genai import types
@@ -24,8 +25,25 @@ ASESORES = {
 }
 
 # ==========================================
-# UTILIDAD DE CAPITALIZACIÓN FORMAL
+# UTILIDADES DE TEXTO Y NOMENCLATURA
 # ==========================================
+
+def limpiar_slug(texto):
+    """Convierte texto a formato slug limpio sin acentos ni caracteres raros (ej: 'balderrama')."""
+    if not texto:
+        return "propiedad"
+    # Quitar acentos
+    t = unicodedata.normalize('NFKD', texto).encode('ASCII', 'ignore').decode('utf-8')
+    t = t.lower().strip()
+    t = re.sub(r'[^a-z0-9]+', '_', t)
+    return t.strip('_')
+
+def generar_prefijo_foto(datos):
+    """Genera el prefijo descriptivo: renta_casa_balderrama"""
+    operacion = limpiar_slug(datos.get("operacion", "inmueble"))
+    tipo = limpiar_slug(datos.get("tipo_inmueble", "propiedad"))
+    colonia = limpiar_slug(datos.get("colonia", "hermosillo"))
+    return f"{operacion}_{tipo}_{colonia}"
 
 def normalizar_oracion(texto):
     t = texto.strip()
@@ -92,7 +110,7 @@ def extraer_datos_inmueble(url):
     else:
         texto_principal = soup.get_text(separator="\n", strip=True)
 
-    # CORTE INMEDIATO A PARTIR DEL ID DE PROPIEDAD (hmor-, hmov-, id:)
+    # CORTE INMEDIATO A PARTIR DEL ID DE PROPIEDAD
     patron_corte = re.search(r'(?i)\b(?:id\s*:\s*hmo[a-z0-9_-]+|hmo[rv]-[0-9]+|id\s+de\s+la\s+propiedad)', texto_principal)
     if patron_corte:
         texto_principal = texto_principal[:patron_corte.start()].strip()
@@ -163,7 +181,6 @@ def armar_ficha_local(og_title, og_desc, body_text, asesor_nombre):
     lineas = [l.strip() for l in body_text.split("\n") if len(l.strip()) > 3]
     caracteristicas = []
     
-    # LISTA NEGRA DE PALABRAS RESIDUALES
     descartar = [
         "next", "inmobiliaria", "contacto", "teléfono", "whatsapp", "descripción", 
         "derechos", "aviso", "buscar", "precio", "id:", "hmor-", "hmov-", 
@@ -227,7 +244,7 @@ def procesar_con_ia(url, og_title, og_desc, body_text, asesor_nombre):
     2. PROHIBIDAS LAS MAYÚSCULAS SOSTENIDAS: Nunca escribas frases completas en mayúsculas como "ALTA AFLUENCIA VEHICULAR" o "LUZ 110 Y TRIFASICA". Usa mayúscula únicamente en la primera letra de la oración y en nombres propios (ej: "Alta afluencia vehicular", "Luz 110 y trifásica", "Sobre Blvd. Morelos").
     3. PRIMERA LÍNEA OBLIGATORIA:
        "[Tipo de inmueble] en [operación] en colonia [Nombre de la Colonia]"
-       (Ejemplo exacto: "Local comercial en renta en colonia Constitución" o "Casa en venta en colonia Jardín Real"). Primera letra con mayúscula y nombre de colonia como nombre propio.
+       (Ejemplo exacto: "Local comercial en renta en colonia Constitución" o "Casa en venta en colonia Balderrama"). Primera letra con mayúscula y nombre de colonia como nombre propio.
     4. CERO ALUCINACIONES: Incluye ABSOLUTAMENTE TODOS los puntos válidos del anuncio (luz 110 y trifásica, m² de terraza, estacionamientos, bodega con lavaplatos, si es más IVA o requiere factura, plusvalía, etc.).
     5. SIN TELÉFONO NI ENLACES DE WHATSAPP.
     6. CIERRE FORMAL:
@@ -282,7 +299,6 @@ def procesar_con_ia(url, og_title, og_desc, body_text, asesor_nombre):
                 copy = re.sub(r'https?://[^\s]+', '', copy)
                 copy = re.sub(r'\bwa\.me[^\s]*', '', copy)
                 copy = re.sub(r'\b\d{10}\b', '', copy)
-                # Limpieza de seguridad post-IA por si se filtró algún ID
                 copy = re.sub(r'(?i)\n.*(?:id\s*:\s*hmo[a-z0-9_-]+|hmor-[0-9]+|hmov-[0-9]+).*', '', copy)
                 data["copy_publicitario"] = copy.strip()
             return data
@@ -322,7 +338,7 @@ if "descargar_ahora" not in st.session_state:
 # ==========================================
 
 st.title("📥 Descargador de Fotos y Ficha para Marketplace")
-st.write("Extrae todas las fotos en alta resolución y genera el copy formal sin teléfonos ni mayúsculas invasivas:")
+st.write("Extrae todas las fotos en alta resolución con nombres organizados y genera el copy formal:")
 
 col_url, col_as = st.columns([2, 1])
 with col_url:
@@ -356,23 +372,28 @@ if st.session_state.datos_extraidos and st.session_state.fotos_extraidas:
     datos = st.session_state.datos_extraidos
     fotos = st.session_state.fotos_extraidas
 
+    # Generar prefijo descriptivo único (ej: renta_casa_balderrama)
+    prefijo_inmueble = generar_prefijo_foto(datos)
+
     col_descargas, col_copy = st.columns([1, 1])
 
     with col_descargas:
         st.subheader(f"🖼️ Fotografías Encontradas ({len(fotos)})")
+        st.caption(f"📌 Nomenclatura asignada: `foto_[#]_{prefijo_inmueble}.jpg`")
         
         if st.button("🚀 Descargar Todas las Fotos Sueltas (Sin ZIP)", type="primary", use_container_width=True):
             st.session_state.descargar_ahora = True
 
         if st.session_state.descargar_ahora:
-            with st.spinner("Descargando imágenes individuales a tu equipo..."):
+            with st.spinner("Descargando imágenes organizadas a tu equipo..."):
                 lista_archivos = []
                 for i, u in enumerate(fotos):
                     b = descargar_foto_bytes(u)
                     if b:
                         b64 = base64.b64encode(b).decode('utf-8')
+                        nombre_foto = f"foto_{i + 1}_{prefijo_inmueble}.jpg"
                         lista_archivos.append({
-                            "nombre": f"Foto_{i + 1}.jpg",
+                            "nombre": nombre_foto,
                             "data": f"data:image/jpeg;base64,{b64}"
                         })
 
@@ -380,7 +401,7 @@ if st.session_state.datos_extraidos and st.session_state.fotos_extraidas:
 
                 js_script = f"""
                 <div id="status_descarga" style="padding: 10px; background-color: #f0fdf4; border: 1px solid #bbf7d0; border-radius: 8px; color: #166534; font-size: 14px;">
-                    ⏳ Descargando {len(lista_archivos)} imágenes individuales a tu carpeta de descargas...
+                    ⏳ Descargando {len(lista_archivos)} imágenes individuales como <b>foto_[#]_{prefijo_inmueble}.jpg</b>...
                 </div>
                 <script>
                 (async function() {{
@@ -406,10 +427,11 @@ if st.session_state.datos_extraidos and st.session_state.fotos_extraidas:
             for i, f_url in enumerate(fotos):
                 foto_bytes = descargar_foto_bytes(f_url)
                 if foto_bytes:
+                    nombre_individual = f"foto_{i + 1}_{prefijo_inmueble}.jpg"
                     st.download_button(
-                        label=f"📥 Descargar Foto #{i + 1}",
+                        label=f"📥 Descargar {nombre_individual}",
                         data=foto_bytes,
-                        file_name=f"Foto_{i + 1}.jpg",
+                        file_name=nombre_individual,
                         mime="image/jpeg",
                         key=f"dl_btn_{i}"
                     )
