@@ -89,17 +89,53 @@ def extraer_datos_inmueble(url):
     return og_title, og_desc, body_text, imagenes
 
 # ==========================================
-# ESTRUCTURACIÓN CON IA (FORMATO EXACTO)
+# RESPALDO EN CASO DE SATURACIÓN TOTAL DE IA
+# ==========================================
+
+def generar_respaldo_local(og_title, og_desc, body_text, asesor_nombre, asesor_tel):
+    texto_combinado = f"{og_title} {og_desc}".lower()
+    
+    # Detección básica
+    tipo = "casa"
+    for t in ["departamento", "oficina", "local comercial", "bodega", "terreno"]:
+        if t in texto_combinado:
+            tipo = t
+            break
+
+    operacion = "renta" if "renta" in texto_combinado else "venta"
+    
+    # Extraer precio aproximado
+    match_precio = re.search(r'\$\s*([0-9]{1,3}(?:,[0-9]{3})+)', f"{og_title} {body_text}")
+    precio = f"${match_precio.group(1)}" if match_precio else "A consultar"
+    
+    copy = f"{tipo} en {operacion}\n\n"
+    copy += f"💰 *Precio:* {precio} MXN\n\n"
+    copy += f"📝 *Detalles de la propiedad:*\n{og_desc if og_desc else body_text[:400]}...\n\n"
+    copy += f"📲 *Más información y citas:*\n*{asesor_nombre}* - Next Bienes Raíces\nWhatsApp: https://wa.me/52{asesor_tel}"
+    
+    return {
+        "colonia": "",
+        "tipo_inmueble": tipo,
+        "operacion": operacion,
+        "precio": precio,
+        "copy_publicitario": copy
+    }
+
+# ==========================================
+# ESTRUCTURACIÓN CON IA CON REINTENTOS ROBUSTOS
 # ==========================================
 
 def procesar_con_ia(url, og_title, og_desc, body_text, asesor_nombre, asesor_tel):
+    if not API_KEY:
+        return generar_respaldo_local(og_title, og_desc, body_text, asesor_nombre, asesor_tel)
+
     client = genai.Client(api_key=API_KEY)
     prompt = f"""
     Eres un analista inmobiliario profesional. Extrae los datos exactos del inmueble y redacta la ficha publicitaria:
     URL: {url}
     Título: {og_title}
     Descripción: {og_desc}
-    Texto: {body_text[:6000]}
+    Texto: {body_text[:5000]}
     Asesor: {asesor_nombre} | Teléfono: {asesor_tel}
 
     Instrucciones estrictas:
@@ -108,7 +144,7 @@ def procesar_con_ia(url, og_title, og_desc, body_text, asesor_nombre, asesor_tel
     3. 'operacion': "renta" o "venta" (en minúsculas).
     4. 'precio': El precio con formato SIN CENTAVOS (ej: "$14,000", "$3,100,000").
     5. 'moneda': "MXN" o "USD".
-    6. 'copy_publicitario': Redacta el texto iniciando OBLIGATORIAMENTE en la primera línea con este formato:
+    6. 'copy_publicitario': Redacta el texto iniciando OBLIGATORIAMENTE en la primera línea con este formato exacto:
        "[tipo_inmueble] en [operacion] en colonia [colonia]"
        (Ejemplo exacto: "casa en renta en colonia san benito" o "departamento en renta en colonia jardín real").
        
@@ -134,7 +170,7 @@ def procesar_con_ia(url, og_title, og_desc, body_text, asesor_nombre, asesor_tel
        *{asesor_nombre}* - Next Bienes Raíces
        WhatsApp: https://wa.me/52{asesor_tel}
 
-       REGLA: NUNCA agregues "(si aplica)" ni paréntesis explicativos en los títulos. Omite las secciones vacías.
+       REGLA: NUNCA agregues "(si aplica)" ni paréntesis en los títulos. Omite las secciones sin datos.
 
     Devuelve un JSON estrictamente válido:
     {{
@@ -146,22 +182,28 @@ def procesar_con_ia(url, og_title, og_desc, body_text, asesor_nombre, asesor_tel
       "copy_publicitario": "casa en renta en colonia san benito\\n\\n💰 *Precio:* $14,000 MXN..."
     }}
     """
-    modelos = ['gemini-2.5-flash-lite', 'gemini-2.5-flash', 'gemini-3.5-flash-lite']
+    
+    # Modelos oficiales con orden de prioridad
+    modelos = ['gemini-2.5-flash', 'gemini-1.5-flash', 'gemini-2.5-pro']
+    
     for mod in modelos:
-        try:
-            res = client.models.generate_content(
-                model=mod,
-                contents=prompt,
-                config=types.GenerateContentConfig(response_mime_type="application/json")
-            )
-            data = json.loads(res.text)
-            if "copy_publicitario" in data:
-                data["copy_publicitario"] = re.sub(r'\s*\((?:si\s+aplica\vert{}si\s+existe)\)', '', data["copy_publicitario"], flags=re.IGNORECASE)
-            return data
-        except Exception:
-            time.sleep(1)
-            continue
-    raise Exception("Modelos saturados temporalmente.")
+        for intento in range(2):
+            try:
+                res = client.models.generate_content(
+                    model=mod,
+                    contents=prompt,
+                    config=types.GenerateContentConfig(response_mime_type="application/json")
+                )
+                data = json.loads(res.text)
+                if "copy_publicitario" in data:
+                    data["copy_publicitario"] = re.sub(r'\s*\((?:si\s+aplica\vert{}si\s+existe)\)', '', data["copy_publicitario"], flags=re.IGNORECASE)
+                return data
+            except Exception:
+                time.sleep(2)
+                continue
+
+    # Si todos los modelos de la API están saturados temporalmente, activa respaldo automático
+    return generar_respaldo_local(og_title, og_desc, body_text, asesor_nombre, asesor_tel)
 
 # ==========================================
 # INICIALIZACIÓN DE ESTADO PERSISTENTE
@@ -226,7 +268,6 @@ if st.session_state.datos_extraidos and st.session_state.fotos_extraidas:
 
         if st.session_state.descargar_ahora:
             json_fotos = json.dumps(fotos)
-            # Script JS que descarga foto por foto con retraso de 250ms
             js_script = f"""
             <script>
             const urls = {json_fotos};
