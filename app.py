@@ -5,6 +5,7 @@ import re
 import json
 import os
 import time
+import base64
 import streamlit.components.v1 as components
 from google import genai
 from google.genai import types
@@ -27,15 +28,12 @@ ASESORES = {
 # ==========================================
 
 def normalizar_oracion(texto):
-    """Convierte texto en MAYÚSCULAS sostenidas a formato de oración formal."""
     t = texto.strip()
     if not t:
         return ""
-    # Si todo o casi todo viene en mayúsculas, lo pasamos a minúsculas y capitalizamos la primera letra
     if t.isupper() or sum(1 for c in t if c.isupper()) > len(t) * 0.6:
         t = t.lower()
         t = t[0].upper() + t[1:]
-    # Respetar nombres propios comunes
     reemplazos = {
         r'\bmorelos\b': 'Morelos',
         r'\bconstitucion\b': 'Constitución',
@@ -77,6 +75,11 @@ def extraer_datos_inmueble(url):
     if meta_d and meta_d.get("content"):
         og_desc = meta_d["content"].strip()
 
+    # Eliminar bloques de agentes o asesores antes de procesar texto
+    for bloque in soup.find_all(lambda t: any(cl in str(t.get('class', '')).lower() or cl in str(t.get('id', '')).lower() 
+                                            for cl in ['asesor', 'agente', 'agent', 'broker', 'perfil-asesor', 'agent-box', 'agent-info'])):
+        bloque.extract()
+
     for s in soup(["script", "style", "noscript", "nav", "footer", "header"]):
         s.extract()
 
@@ -90,7 +93,11 @@ def extraer_datos_inmueble(url):
     else:
         texto_principal = soup.get_text(separator="\n", strip=True)
 
-    palabras_prohibidas = ["asesor", "agente", "broker", "logo", "avatar", "icon", "user", "staff"]
+    # Filtro ampliado para eliminar fotos de asesores
+    palabras_prohibidas = [
+        "asesor", "agente", "agent", "broker", "logo", "avatar", "icon", "user", 
+        "staff", "team", "perfil", "cristian", "claudia", "whatsapp", "facebook", "nextbr"
+    ]
     imagenes = []
 
     meta_img = soup.find("meta", property="og:image")
@@ -102,13 +109,14 @@ def extraer_datos_inmueble(url):
     for img in soup.find_all("img"):
         src = img.get("src") or img.get("data-src") or ""
         alt = (img.get("alt") or "").lower()
-        if not src or any(p in src.lower() for p in palabras_prohibidas) or any(p in alt for p in palabras_prohibidas):
+        src_lower = src.lower()
+        if not src or any(p in src_lower for p in palabras_prohibidas) or any(p in alt for p in palabras_prohibidas):
             continue
-        if any(term in src.lower() for term in ["uploads", "listings", "propiedades", "images"]):
+        if any(term in src_lower for term in ["uploads", "listings", "propiedades", "images"]):
             full_src = re.sub(r'-[0-9]+x[0-9]+', '', src)
             if not full_src.startswith("http"):
                 full_src = f"https://nextbr.mx{full_src}"
-            if full_src not in imagenes:
+            if full_src not in imagenes and not any(p in full_src.lower() for p in palabras_prohibidas):
                 imagenes.append(full_src)
 
     matches_raw = re.findall(r'https?://[^\s"\']+\.(?:jpe?g|png|webp)', resp.text, re.IGNORECASE)
@@ -116,13 +124,13 @@ def extraer_datos_inmueble(url):
         m_lower = m.lower()
         if ("listings" in m_lower or "uploads" in m_lower) and not any(p in m_lower for p in palabras_prohibidas):
             clean_m = re.sub(r'-[0-9]+x[0-9]+', '', m)
-            if clean_m not in imagenes:
+            if clean_m not in imagenes and not any(p in clean_m.lower() for p in palabras_prohibidas):
                 imagenes.append(clean_m)
 
     return og_title, og_desc, texto_principal, imagenes
 
 # ==========================================
-# PARSEADOR LOCAL CON ORTOGRAFÍA LIMPIA
+# PARSEADOR LOCAL DE RESPALDO
 # ==========================================
 
 def armar_ficha_local(og_title, og_desc, body_text, asesor_nombre):
@@ -157,9 +165,7 @@ def armar_ficha_local(og_title, og_desc, body_text, asesor_nombre):
             if l_limpia not in caracteristicas and not l_limpia.lower().startswith("local comercial en renta"):
                 caracteristicas.append(l_limpia)
 
-    # Armar estructura formal con saltos limpios
     copy = f"{tipo} en {operacion} en colonia {colonia}\n\n"
-    
     if precio:
         copy += f"💰 *Precio:* {precio} MXN"
         if "iva" in texto_lower:
@@ -181,7 +187,7 @@ def armar_ficha_local(og_title, og_desc, body_text, asesor_nombre):
     }
 
 # ==========================================
-# ESTRUCTURACIÓN CON IA (FORMATO PROFESIONAL)
+# ESTRUCTURACIÓN CON IA
 # ==========================================
 
 def procesar_con_ia(url, og_title, og_desc, body_text, asesor_nombre):
@@ -269,6 +275,19 @@ def procesar_con_ia(url, og_title, og_desc, body_text, asesor_nombre):
     return armar_ficha_local(og_title, og_desc, body_text, asesor_nombre)
 
 # ==========================================
+# DESCARGA PROXY (CONVERSIÓN A BASE64 DATA-URI)
+# ==========================================
+
+def descargar_foto_bytes(url):
+    try:
+        r = requests.get(url, timeout=10, headers={"User-Agent": "Mozilla/5.0"})
+        if r.status_code == 200:
+            return r.content
+    except Exception:
+        pass
+    return None
+
+# ==========================================
 # INICIALIZACIÓN DE ESTADO PERSISTENTE
 # ==========================================
 
@@ -306,7 +325,7 @@ if st.button("🔍 Extraer Fotos y Generar Ficha", type="primary"):
                 st.session_state.datos_extraidos = datos
                 st.session_state.fotos_extraidas = fotos
                 st.session_state.descargar_ahora = False
-                st.success(f"¡Extracción exitosa! Se encontraron {len(fotos)} fotografías.")
+                st.success(f"¡Extracción exitosa! Se encontraron {len(fotos)} fotografías del inmueble.")
             except Exception as e:
                 st.error(f"Error al analizar el inmueble: {e}")
 
@@ -323,48 +342,59 @@ if st.session_state.datos_extraidos and st.session_state.fotos_extraidas:
     with col_descargas:
         st.subheader(f"🖼️ Fotografías Encontradas ({len(fotos)})")
         
-        if st.button("🚀 Descargar Todas las Fotos en 1 Clic (Individuales)", type="primary", use_container_width=True):
+        if st.button("🚀 Descargar Todas las Fotos en 1 Clic", type="primary", use_container_width=True):
             st.session_state.descargar_ahora = True
 
         if st.session_state.descargar_ahora:
-            json_fotos = json.dumps(fotos)
-            js_script = f"""
-            <script>
-            const urls = {json_fotos};
-            async function descargarTodas() {{
-                for (let i = 0; i < urls.length; i++) {{
-                    try {{
-                        const resp = await fetch(urls[i]);
-                        const blob = await resp.blob();
+            with st.spinner("Preparando descarga directa hacia tu dispositivo..."):
+                lista_data_uris = []
+                for i, u in enumerate(fotos):
+                    b = descargar_foto_bytes(u)
+                    if b:
+                        b64 = base64.b64encode(b).decode('utf-8')
+                        lista_data_uris.append({
+                            "nombre": f"Foto_{i + 1}.jpg",
+                            "data": f"data:image/jpeg;base64,{b64}"
+                        })
+
+                json_payload = json.dumps(lista_data_uris)
+
+                # Script para forzar la descarga de cada archivo individualmente en base64
+                js_script = f"""
+                <script>
+                const archivos = {json_payload};
+                async function guardarTodo() {{
+                    for (let i = 0; i < archivos.length; i++) {{
                         const a = document.createElement('a');
-                        a.href = URL.createObjectURL(blob);
-                        a.download = `Foto_${{i + 1}}.jpg`;
+                        a.href = archivos[i].data;
+                        a.download = archivos[i].nombre;
                         document.body.appendChild(a);
                         a.click();
                         document.body.removeChild(a);
                         await new Promise(r => setTimeout(r, 250));
-                    }} catch (e) {{
-                        const a = document.createElement('a');
-                        a.href = urls[i];
-                        a.target = '_blank';
-                        a.download = `Foto_${{i + 1}}.jpg`;
-                        a.click();
                     }}
                 }}
-            }}
-            descargarTodas();
-            </script>
-            <div style="padding: 10px; background-color: #f0fdf4; border: 1px solid #bbf7d0; border-radius: 8px; color: #166534; font-size: 14px;">
-                ✅ <b>Iniciando descarga individual de {len(fotos)} fotos...</b><br>
-                <i>Nota: Si tu navegador pide permiso para "descargar varios archivos", haz clic en Permitir.</i>
-            </div>
-            """
-            components.html(js_script, height=90)
+                guardarTodo();
+                </script>
+                <div style="padding: 10px; background-color: #f0fdf4; border: 1px solid #bbf7d0; border-radius: 8px; color: #166534; font-size: 14px;">
+                    ✅ <b>Descarga individual completada.</b> Revisa tu carpeta de Descargas.<br>
+                    <i>Si tu navegador preguntó, asegúrate de haber dado permiso para descargas múltiples.</i>
+                </div>
+                """
+                components.html(js_script, height=90)
 
-        st.markdown("##### O descarga manual por enlace directo:")
-        with st.expander("Ver lista de enlaces individuales", expanded=False):
+        st.markdown("##### Descargas manuales individuales:")
+        with st.expander("Ver botones de descarga por foto", expanded=False):
             for i, f_url in enumerate(fotos):
-                st.markdown(f"- [Descargar Foto #{i + 1}]({f_url})")
+                foto_bytes = descargar_foto_bytes(f_url)
+                if foto_bytes:
+                    st.download_button(
+                        label=f"📥 Descargar Foto #{i + 1}",
+                        data=foto_bytes,
+                        file_name=f"Foto_{i + 1}.jpg",
+                        mime="image/jpeg",
+                        key=f"dl_btn_{i}"
+                    )
 
     with col_copy:
         st.subheader("📋 Descripción para Marketplace")
