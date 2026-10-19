@@ -49,7 +49,7 @@ def normalizar_oracion(texto):
     return t
 
 # ==========================================
-# EXTRACCIÓN Y SCRAPING
+# EXTRACCIÓN Y SCRAPING PRECISO
 # ==========================================
 
 def extraer_datos_inmueble(url):
@@ -75,9 +75,9 @@ def extraer_datos_inmueble(url):
     if meta_d and meta_d.get("content"):
         og_desc = meta_d["content"].strip()
 
-    # Eliminar bloques de agentes o asesores antes de procesar texto
+    # Eliminar bloques específicos de asesores y navegación
     for bloque in soup.find_all(lambda t: any(cl in str(t.get('class', '')).lower() or cl in str(t.get('id', '')).lower() 
-                                            for cl in ['asesor', 'agente', 'agent', 'broker', 'perfil-asesor', 'agent-box', 'agent-info'])):
+                                            for cl in ['perfil-asesor', 'agent-box', 'agent-info', 'author-box'])):
         bloque.extract()
 
     for s in soup(["script", "style", "noscript", "nav", "footer", "header"]):
@@ -93,38 +93,45 @@ def extraer_datos_inmueble(url):
     else:
         texto_principal = soup.get_text(separator="\n", strip=True)
 
-    # Filtro ampliado para eliminar fotos de asesores
-    palabras_prohibidas = [
-        "asesor", "agente", "agent", "broker", "logo", "avatar", "icon", "user", 
-        "staff", "team", "perfil", "cristian", "claudia", "whatsapp", "facebook", "nextbr"
+    # Filtro puntual: excluir logos y avatares de asesores sin tocar el dominio
+    patrones_asesor = [
+        "avatar", "logo", "icon", "perfil-", "asesor", "/agent/", "/agents/", 
+        "cristian-sosa", "claudia-castro", "team-", "/staff/", "favicon"
     ]
+
     imagenes = []
 
+    # 1. Foto principal OpenGraph
     meta_img = soup.find("meta", property="og:image")
     if meta_img and meta_img.get("content"):
         img_url = meta_img["content"]
-        if "http" in img_url and not any(p in img_url.lower() for p in palabras_prohibidas):
+        if "http" in img_url and not any(p in img_url.lower() for p in patrones_asesor):
             imagenes.append(img_url)
 
+    # 2. Etiquetas img
     for img in soup.find_all("img"):
-        src = img.get("src") or img.get("data-src") or ""
+        src = img.get("src") or img.get("data-src") or img.get("data-lazy-src") or ""
         alt = (img.get("alt") or "").lower()
         src_lower = src.lower()
-        if not src or any(p in src_lower for p in palabras_prohibidas) or any(p in alt for p in palabras_prohibidas):
+        
+        if not src or any(p in src_lower for p in patrones_asesor) or any(p in alt for p in patrones_asesor):
             continue
+        
+        # Debe pertenecer al contenido o listado de imágenes
         if any(term in src_lower for term in ["uploads", "listings", "propiedades", "images"]):
             full_src = re.sub(r'-[0-9]+x[0-9]+', '', src)
             if not full_src.startswith("http"):
                 full_src = f"https://nextbr.mx{full_src}"
-            if full_src not in imagenes and not any(p in full_src.lower() for p in palabras_prohibidas):
+            if full_src not in imagenes:
                 imagenes.append(full_src)
 
+    # 3. Expresión regular por si están incrustadas en galerías JS
     matches_raw = re.findall(r'https?://[^\s"\']+\.(?:jpe?g|png|webp)', resp.text, re.IGNORECASE)
     for m in matches_raw:
         m_lower = m.lower()
-        if ("listings" in m_lower or "uploads" in m_lower) and not any(p in m_lower for p in palabras_prohibidas):
+        if any(term in m_lower for term in ["uploads", "listings", "propiedades"]) and not any(p in m_lower for p in patrones_asesor):
             clean_m = re.sub(r'-[0-9]+x[0-9]+', '', m)
-            if clean_m not in imagenes and not any(p in clean_m.lower() for p in palabras_prohibidas):
+            if clean_m not in imagenes:
                 imagenes.append(clean_m)
 
     return og_title, og_desc, texto_principal, imagenes
@@ -275,12 +282,12 @@ def procesar_con_ia(url, og_title, og_desc, body_text, asesor_nombre):
     return armar_ficha_local(og_title, og_desc, body_text, asesor_nombre)
 
 # ==========================================
-# DESCARGA PROXY (CONVERSIÓN A BASE64 DATA-URI)
+# DESCARGA PROXY (CONVERSIÓN A BYTES)
 # ==========================================
 
 def descargar_foto_bytes(url):
     try:
-        r = requests.get(url, timeout=10, headers={"User-Agent": "Mozilla/5.0"})
+        r = requests.get(url, timeout=12, headers={"User-Agent": "Mozilla/5.0"})
         if r.status_code == 200:
             return r.content
     except Exception:
@@ -346,7 +353,7 @@ if st.session_state.datos_extraidos and st.session_state.fotos_extraidas:
             st.session_state.descargar_ahora = True
 
         if st.session_state.descargar_ahora:
-            with st.spinner("Preparando descarga directa hacia tu dispositivo..."):
+            with st.spinner("Preparando descarga directa a tu carpeta de descargas..."):
                 lista_data_uris = []
                 for i, u in enumerate(fotos):
                     b = descargar_foto_bytes(u)
@@ -359,7 +366,6 @@ if st.session_state.datos_extraidos and st.session_state.fotos_extraidas:
 
                 json_payload = json.dumps(lista_data_uris)
 
-                # Script para forzar la descarga de cada archivo individualmente en base64
                 js_script = f"""
                 <script>
                 const archivos = {json_payload};
@@ -371,14 +377,14 @@ if st.session_state.datos_extraidos and st.session_state.fotos_extraidas:
                         document.body.appendChild(a);
                         a.click();
                         document.body.removeChild(a);
-                        await new Promise(r => setTimeout(r, 250));
+                        await new Promise(r => setTimeout(r, 200));
                     }}
                 }}
                 guardarTodo();
                 </script>
                 <div style="padding: 10px; background-color: #f0fdf4; border: 1px solid #bbf7d0; border-radius: 8px; color: #166534; font-size: 14px;">
-                    ✅ <b>Descarga individual completada.</b> Revisa tu carpeta de Descargas.<br>
-                    <i>Si tu navegador preguntó, asegúrate de haber dado permiso para descargas múltiples.</i>
+                    ✅ <b>Descarga completada.</b> Revisa tu carpeta de Descargas.<br>
+                    <i>Si el navegador solicita confirmación para descargar varios archivos, presiona Permitir.</i>
                 </div>
                 """
                 components.html(js_script, height=90)
