@@ -29,17 +29,14 @@ ASESORES = {
 # ==========================================
 
 def limpiar_slug(texto):
-    """Convierte texto a formato slug limpio sin acentos ni caracteres raros (ej: 'balderrama')."""
     if not texto:
         return "propiedad"
-    # Quitar acentos
     t = unicodedata.normalize('NFKD', texto).encode('ASCII', 'ignore').decode('utf-8')
     t = t.lower().strip()
     t = re.sub(r'[^a-z0-9]+', '_', t)
     return t.strip('_')
 
 def generar_prefijo_foto(datos):
-    """Genera el prefijo descriptivo: renta_casa_balderrama"""
     operacion = limpiar_slug(datos.get("operacion", "inmueble"))
     tipo = limpiar_slug(datos.get("tipo_inmueble", "propiedad"))
     colonia = limpiar_slug(datos.get("colonia", "hermosillo"))
@@ -110,7 +107,6 @@ def extraer_datos_inmueble(url):
     else:
         texto_principal = soup.get_text(separator="\n", strip=True)
 
-    # CORTE INMEDIATO A PARTIR DEL ID DE PROPIEDAD
     patron_corte = re.search(r'(?i)\b(?:id\s*:\s*hmo[a-z0-9_-]+|hmo[rv]-[0-9]+|id\s+de\s+la\s+propiedad)', texto_principal)
     if patron_corte:
         texto_principal = texto_principal[:patron_corte.start()].strip()
@@ -372,7 +368,6 @@ if st.session_state.datos_extraidos and st.session_state.fotos_extraidas:
     datos = st.session_state.datos_extraidos
     fotos = st.session_state.fotos_extraidas
 
-    # Generar prefijo descriptivo único (ej: renta_casa_balderrama)
     prefijo_inmueble = generar_prefijo_foto(datos)
 
     col_descargas, col_copy = st.columns([1, 1])
@@ -422,19 +417,21 @@ if st.session_state.datos_extraidos and st.session_state.fotos_extraidas:
                 components.html(js_script, height=90)
 
         st.markdown("---")
-        st.markdown("##### O descarga manual foto por foto:")
-        with st.expander("Ver botones individuales por fotografía", expanded=False):
-            for i, f_url in enumerate(fotos):
-                foto_bytes = descargar_foto_bytes(f_url)
-                if foto_bytes:
-                    nombre_individual = f"foto_{i + 1}_{prefijo_inmueble}.jpg"
-                    st.download_button(
-                        label=f"📥 Descargar {nombre_individual}",
-                        data=foto_bytes,
-                        file_name=nombre_individual,
-                        mime="image/jpeg",
-                        key=f"dl_btn_{i}"
-                    )
+        st.markdown("##### Descarga manual foto por foto (Siempre visibles):")
+        
+        # Lista visible directa sin menú colapsable
+        for i, f_url in enumerate(fotos):
+            foto_bytes = descargar_foto_bytes(f_url)
+            if foto_bytes:
+                nombre_individual = f"foto_{i + 1}_{prefijo_inmueble}.jpg"
+                st.download_button(
+                    label=f"📥 Descargar {nombre_individual}",
+                    data=foto_bytes,
+                    file_name=nombre_individual,
+                    mime="image/jpeg",
+                    key=f"dl_btn_{i}",
+                    use_container_width=True
+                )
 
     with col_copy:
         st.subheader("📋 Descripción para Marketplace")
