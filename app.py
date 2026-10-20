@@ -31,7 +31,7 @@ ASESORES = {
 def limpiar_slug(texto):
     if not texto:
         return "propiedad"
-    t = unicodedata.normalize('NFKD', texto).encode('ASCII', 'ignore').decode('utf-8')
+    t = unicodedata.normalize('NFKD', str(texto)).encode('ASCII', 'ignore').decode('utf-8')
     t = t.lower().strip()
     t = re.sub(r'[^a-z0-9]+', '_', t)
     return t.strip('_')
@@ -43,7 +43,7 @@ def generar_prefijo_foto(datos):
     return f"{operacion}_{tipo}_{colonia}"
 
 def normalizar_oracion(texto):
-    t = texto.strip()
+    t = str(texto).strip()
     t = re.sub(r'^[\*\•\-\–\—\s\.\:\,\;]+', '', t).strip()
     t = re.sub(r'^[\U00010000-\U0010ffff\u2600-\u27ff\u2300-\u23ff\s]+', '', t).strip()
     if not t:
@@ -66,16 +66,17 @@ def normalizar_oracion(texto):
     return t
 
 # ==========================================
-# EXTRACCIÓN Y SCRAPING
+# EXTRACCIÓN Y SCRAPING RÁPIDO CON TIMEOUT
 # ==========================================
 
 def extraer_datos_inmueble(url):
-    session = requests.Session()
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
         "Accept-Language": "es-ES,es;q=0.9"
     }
-    resp = session.get(url, headers=headers, timeout=20)
+    # Timeout de conexión: 5 segundos, lectura: 10 segundos
+    resp = requests.get(url, headers=headers, timeout=(5, 10))
     resp.encoding = 'utf-8'
     soup = BeautifulSoup(resp.text, 'html.parser')
 
@@ -283,32 +284,30 @@ def armar_ficha_local(og_title, og_desc, body_text, asesor_nombre):
     }
 
 # ==========================================
-# ESTRUCTURACIÓN CON IA (GEMINI ACTUALIZADO)
+# ESTRUCTURACIÓN CON IA (CON TIMEOUT CONTROLADO)
 # ==========================================
 
 def procesar_con_ia(url, og_title, og_desc, body_text, asesor_nombre):
     if not API_KEY:
-        st.warning("⚠️ No se encontró GEMINI_API_KEY en Secrets. Usando generador local.")
         return armar_ficha_local(og_title, og_desc, body_text, asesor_nombre)
 
-    client = genai.Client(api_key=API_KEY)
     prompt = f"""
-    Eres un asesor inmobiliario profesional de élite. Redacta una ficha publicitaria limpia, moderna y profesional para Facebook Marketplace.
+    Eres un asesor inmobiliario profesional. Redacta una ficha publicitaria limpia y moderna para Facebook Marketplace.
 
     DATOS DE LA PROPIEDAD:
     URL: {url}
     Título: {og_title}
     Descripción: {og_desc}
-    Texto completo:
-    {body_text[:6000]}
+    Texto:
+    {body_text[:4000]}
 
     Asesor: {asesor_nombre}
 
-    REGLAS ESTRICTAS DE REDACCIÓN:
-    1. CERO REPETICIONES: NUNCA pongas renglones que solo repitan la colonia, ni códigos postales, ni "Sonora, México".
-    2. CERO EMOJIS O ASTERISCOS DUPLICADOS: No escribas "🏠 * 🛏️" ni "🛏️ * 🛏️".
-    3. CERO TEXTOS PLANOS COMO "Distribución" o "Seguridad y equipamiento" convertidos en viñetas. Usa títulos ordenados.
-    4. PROHIBIDO EL IVA: No menciones nada de IVA ni facturas.
+    REGLAS ESTRICTAS:
+    1. CERO REPETICIÓN: No repitas renglones con la colonia, ni códigos postales, ni "Sonora, México".
+    2. CERO EMOJIS O ASTERISCOS DUPLICADOS: No escribas "🏠 * 🛏️". Solo un emoji por renglón.
+    3. CERO TEXTOS PLANOS COMO "Distribución" en viñetas.
+    4. PROHIBIDO EL IVA: Cero menciones de IVA o factura.
     5. OPERACIÓN: "renta", "venta" o "traspaso" (si el título o texto indica traspaso).
     6. SIN TELÉFONO NI ENLACES EXTERNOS.
 
@@ -324,11 +323,11 @@ def procesar_con_ia(url, og_title, og_desc, body_text, asesor_nombre):
     🛏️ [Cantidad de recámaras]
     🚿 [Cantidad de baños]
     🚗 [Cochera o estacionamiento]
-    🏠 Espacios: [Agrupa sala, comedor, cocina, estancia, patio, lavandería en un párrafo limpio]
+    🏠 Espacios: [Agrupa sala, comedor, cocina, estancia, patio, lavandería]
 
-    (Si cuenta con seguridad, equipamiento o amenidades, ponlo con título limpio):
+    (Si cuenta con seguridad o equipamiento):
     🔒 Seguridad y equipamiento:
-    • [Detalle 1: cámaras, alarma, rejas, minisplits, etc.]
+    • [Detalle 1]
     • [Detalle 2]
 
     📲 Más información y citas por mensaje directo.
@@ -337,41 +336,39 @@ def procesar_con_ia(url, og_title, og_desc, body_text, asesor_nombre):
 
     Devuelve un JSON estrictamente válido:
     {{
-      "colonia": "Pedregal De La Villa",
-      "tipo_inmueble": "Casa",
-      "operacion": "venta",
-      "precio": "$2,695,000",
+      "colonia": "...",
+      "tipo_inmueble": "...",
+      "operacion": "...",
+      "precio": "...",
       "moneda": "MXN",
       "copy_publicitario": "..."
     }}
     """
 
-    # Modelos oficiales vigentes en la API
-    modelos = ['gemini-2.5-flash', 'gemini-flash-latest']
-
-    for mod in modelos:
-        try:
-            res = client.models.generate_content(
-                model=mod,
-                contents=prompt,
-                config=types.GenerateContentConfig(response_mime_type="application/json")
+    try:
+        client = genai.Client(api_key=API_KEY)
+        res = client.models.generate_content(
+            model='gemini-2.5-flash',
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                response_mime_type="application/json"
             )
-            data = json.loads(res.text)
-            if "copy_publicitario" in data:
-                copy = data["copy_publicitario"]
-                copy = re.sub(r'https?://[^\s]+', '', copy)
-                copy = re.sub(r'\bwa\.me[^\s]*', '', copy)
-                copy = re.sub(r'\b\d{10}\b', '', copy)
-                copy = re.sub(r'(?i)\n.*(?:id\s*:\s*hmo[a-z0-9_-]+|hmor-[0-9]+|hmov-[0-9]+).*', '', copy)
-                copy = re.sub(r'\s*\((?:más\s+iva\vert{}se\s+factura\vert{}facturable\vert{}iva)[^)]*\)', '', copy, flags=re.IGNORECASE)
-                copy = re.sub(r'([🏠🛏️🚿🚗❄️🌳🔹🔺])\s*[\*\•\-]?\s*([🏠🛏️🚿🚗❄️🌳])', r'\1', copy)
-                data["copy_publicitario"] = copy.strip()
+        )
+        data = json.loads(res.text)
+        if "copy_publicitario" in data:
+            copy = data["copy_publicitario"]
+            copy = re.sub(r'https?://[^\s]+', '', copy)
+            copy = re.sub(r'\bwa\.me[^\s]*', '', copy)
+            copy = re.sub(r'\b\d{10}\b', '', copy)
+            copy = re.sub(r'(?i)\n.*(?:id\s*:\s*hmo[a-z0-9_-]+|hmor-[0-9]+|hmov-[0-9]+).*', '', copy)
+            copy = re.sub(r'\s*\((?:más\s+iva\vert{}se\s+factura\vert{}facturable\vert{}iva)[^)]*\)', '', copy, flags=re.IGNORECASE)
+            copy = re.sub(r'([🏠🛏️🚿🚗❄️🌳🔹🔺])\s*[\*\•\-]?\s*([🏠🛏️🚿🚗❄️🌳])', r'\1', copy)
+            data["copy_publicitario"] = copy.strip()
             return data
-        except Exception:
-            time.sleep(1)
-            continue
+    except Exception:
+        pass
 
-    # Respaldo inteligente si la API no estuviera disponible
+    # Si la API tarda o falla, cae de inmediato al parseador local sin trabar el hilo
     return armar_ficha_local(og_title, og_desc, body_text, asesor_nombre)
 
 # ==========================================
@@ -381,7 +378,7 @@ def procesar_con_ia(url, og_title, og_desc, body_text, asesor_nombre):
 @st.cache_data(show_spinner=False)
 def descargar_foto_bytes(url):
     try:
-        r = requests.get(url, timeout=12, headers={"User-Agent": "Mozilla/5.0"})
+        r = requests.get(url, timeout=(3, 8), headers={"User-Agent": "Mozilla/5.0"})
         if r.status_code == 200:
             return r.content
     except Exception:
