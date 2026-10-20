@@ -55,7 +55,6 @@ def normalizar_oracion(texto):
         r'\bsonora\b': 'Sonora',
         r'\bmexico\b': 'México',
         r'\bblvd\.?\b': 'Blvd.',
-        r'\biva\b': 'IVA',
         r'\bm2\b': 'm²'
     }
     for patron, repl in reemplazos.items():
@@ -149,7 +148,7 @@ def extraer_datos_inmueble(url):
     return og_title, og_desc, texto_principal, imagenes
 
 # ==========================================
-# PARSEADOR LOCAL DE RESPALDO (DINÁMICO)
+# PARSEADOR LOCAL DE RESPALDO (FORMATO MARKETPLACE)
 # ==========================================
 
 def armar_ficha_local(og_title, og_desc, body_text, asesor_nombre):
@@ -158,16 +157,15 @@ def armar_ficha_local(og_title, og_desc, body_text, asesor_nombre):
 
     # 1. Tipo de inmueble
     tipo = "Casa"
-    es_comercial = False
-    for t_raw, t_nom in [("local comercial", "Local comercial"), ("departamento", "Departamento"), 
-                         ("oficina", "Oficina"), ("casa", "Casa"), ("bodega", "Bodega"), ("terreno", "Terreno")]:
+    emoji_tipo = "🏠"
+    for t_raw, t_nom, emo in [("local comercial", "Local comercial", "🏢"), ("departamento", "Departamento", "🏢"), 
+                              ("oficina", "Oficina", "🏢"), ("casa", "Casa", "🏠"), ("bodega", "Bodega", "📦"), ("terreno", "Terreno", "📐")]:
         if t_raw in texto_lower:
             tipo = t_nom
-            if t_nom in ["Local comercial", "Oficina", "Bodega"]:
-                es_comercial = True
+            emoji_tipo = emo
             break
 
-    # 2. Operación (Traspaso prioritario)
+    # 2. Operación
     if "traspaso" in texto_lower or "traspasa" in texto_lower:
         operacion = "traspaso"
     elif "renta" in texto_lower or "se renta" in texto_lower:
@@ -203,7 +201,7 @@ def armar_ficha_local(og_title, og_desc, body_text, asesor_nombre):
         "next", "inmobiliaria", "contacto", "teléfono", "whatsapp", "descripción", 
         "derechos", "aviso", "buscar", "precio", "id:", "hmor-", "hmov-", 
         "contactar vía", "enviar", "propiedades relacionadas", "completa tus datos", 
-        "cancelar", "aceptar", "ver en mapa", "características", "medios baños"
+        "cancelar", "aceptar", "ver en mapa", "características", "medios baños", "iva", "factura"
     ]
     
     for l in lineas:
@@ -215,19 +213,34 @@ def armar_ficha_local(og_title, og_desc, body_text, asesor_nombre):
             if l_limpia not in caracteristicas and not any(op in l_limpia.lower() for op in ["en renta", "en venta", "en traspaso"]):
                 caracteristicas.append(l_limpia)
 
+    # Armado con el nuevo diseño
     copy = f"{tipo} en {operacion} en colonia {colonia}\n\n"
-    if precio:
-        copy += f"💰 *Precio:* {precio} MXN"
-        # Regla estricta: solo si es comercial y el texto lo menciona explícitamente
-        if es_comercial and ("iva" in texto_lower or "factura" in texto_lower):
-            copy += " (más IVA, facturable)"
-        copy += "\n\n"
+    copy += f"{emoji_tipo} {tipo.upper()} EN {operacion.upper()} EN {colonia.upper()} - {precio}\n"
+    copy += f"📍 {colonia}\n"
+    copy += "✨ ¡Excelente oportunidad lista para habitar o comenzar tu proyecto!\n\n"
 
-    copy += "✨ *Características y Distribución:*\n"
     for c in caracteristicas:
-        copy += f"• {c}\n"
+        c_low = c.lower()
+        if "recámara" in c_low or "recamara" in c_low or "habitaci" in c_low:
+            copy += f"🛏️ {c}\n"
+        elif "baño" in c_low:
+            copy += f"🚿 {c}\n"
+        elif "cochera" in c_low or "auto" in c_low or "estacionamiento" in c_low:
+            copy += f"🚗 {c}\n"
+        elif "minisplit" in c_low or "aire" in c_low or "clima" in c_low:
+            copy += f"❄️ Climatización: {c}\n"
+        elif "lavad" in c_low:
+            copy += f"🧺 Área de lavado: {c}\n"
+        elif "agua" in c_low or "boiler" in c_low or "gas" in c_low or "luz" in c_low:
+            copy += f"💧 Instalaciones y servicios: {c}\n"
+        elif "internet" in c_low or "wifi" in c_low:
+            copy += f"📶 {c}\n"
+        elif "mantenimiento" in c_low:
+            copy += f"🧹 {c}\n"
+        else:
+            copy += f"🏠 {c}\n"
 
-    copy += f"\n📩 *Para más información, citas o disponibilidad, envía un mensaje directo.*\n*{asesor_nombre}* - Next Bienes Raíces"
+    copy += f"\n📲 Más información y citas por mensaje directo.\n\n*{asesor_nombre}* - Next Bienes Raíces"
 
     return {
         "colonia": colonia,
@@ -238,7 +251,7 @@ def armar_ficha_local(og_title, og_desc, body_text, asesor_nombre):
     }
 
 # ==========================================
-# ESTRUCTURACIÓN CON IA (FORMATO ESTRICTO)
+# ESTRUCTURACIÓN CON IA (NUEVO FORMATO EMOJIS)
 # ==========================================
 
 def procesar_con_ia(url, og_title, og_desc, body_text, asesor_nombre):
@@ -247,7 +260,7 @@ def procesar_con_ia(url, og_title, og_desc, body_text, asesor_nombre):
 
     client = genai.Client(api_key=API_KEY)
     prompt = f"""
-    Eres un asesor inmobiliario profesional de élite. Redacta una ficha publicitaria formal para Facebook Marketplace.
+    Eres un asesor inmobiliario profesional de élite. Redacta una ficha publicitaria moderna, limpia y atractiva para Facebook Marketplace usando emojis temáticos por categoría.
 
     DATOS DE LA PROPIEDAD:
     URL: {url}
@@ -258,49 +271,46 @@ def procesar_con_ia(url, og_title, og_desc, body_text, asesor_nombre):
 
     Asesor: {asesor_nombre}
 
-    REGLAS CRÍTICAS DE EXTRACCIÓN:
-    1. OPERACIÓN: Si en el título o en el texto dice "traspaso" o "se traspasa", la operación DEBE ser "traspaso" (en minúsculas), AUNQUE el sistema del portal la clasifique como venta. Si no, usa "renta" o "venta" según corresponda.
-    2. COLONIA EXACTA: Extrae el nombre real y específico de la colonia, fraccionamiento o residencial de ESTA propiedad (ejemplos: "Balderrama", "San Benito", "Jardín Real", "Puerta del Rey", "Los Ángeles", etc.). NUNCA inventes una colonia.
-    3. REGLA ESTRICTA DE IVA Y FACTURACIÓN:
-       - PROHIBIDO mencionar IVA o facturación en CASAS, DEPARTAMENTOS o TERRENOS RESIDENCIALES (ni en venta, ni en renta, ni en traspaso). Jamás agregues "más IVA" ni notas de factura para vivienda.
-       - ÚNICAMENTE menciona IVA o facturación si el inmueble es COMERCIAL (Local Comercial, Oficina, Bodega, Nave Industrial, Terreno Comercial) Y el texto original de la propiedad especifica explícitamente que es más IVA o requiere factura. Si no lo especifica, no lo pongas.
-    4. PRIMERA LÍNEA OBLIGATORIA:
-       "[Tipo de inmueble] en [operación] en colonia [Nombre de la Colonia]"
-       (Ejemplos: "Casa en traspaso en colonia Balderrama", "Local comercial en renta en colonia Constitución", "Casa en venta en colonia Jardín Real"). Primera letra con mayúscula y la colonia como nombre propio.
-    5. PROHIBIDO INCLUIR IDS Y FORMULARIOS: NUNCA incluyas IDs de propiedad (como "Id: hmor-...", "hmov-..."), botones del sitio, ni nombres de asesores ajenos. Corta toda la información residual de pie de página.
-    6. CERO MAYÚSCULAS SOSTENIDAS: Solo mayúscula al inicio de oraciones y en nombres propios.
-    7. SIN TELÉFONO NI ENLACES DE WHATSAPP.
-    8. CIERRE FORMAL:
-       📩 *Para más información, citas o disponibilidad, envía un mensaje directo.*
-       *{asesor_nombre}* - Next Bienes Raíces
+    REGLAS CRÍTICAS:
+    1. PROHIBIDO TOTALMENTE EL IVA: NUNCA pongas "más IVA", "IVA incluido", "se factura" ni nada relacionado con impuestos. El precio va directo y limpio.
+    2. OPERACIÓN: Si dice "traspaso" o "se traspasa", la operación DEBE ser "traspaso" (en minúsculas), aunque el portal diga venta. Si no, usa "renta" o "venta".
+    3. COLONIA: Extrae el nombre exacto de la colonia o residencial (ej: Praga Residencial, Balderrama, San Benito, Constitución).
+    4. SIN TELÉFONO NI LINKS: No enlaces wa.me, ni teléfonos directos.
+    5. CERO ALUCINACIONES: Incluye todos los datos reales (recámaras, baños, cochera, electrodomésticos, climas, terraza, servicios incluidos).
 
-    ESTRUCTURA DE 'copy_publicitario':
+    ESTRUCTURA EXACTA DE 'copy_publicitario' QUE DEBES GENERAR:
     [Tipo de inmueble] en [operación] en colonia [Nombre de la Colonia]
 
-    💰 *Precio:* [Precio] [Moneda] [Si y solo si es comercial y lo menciona el texto: (más IVA, facturable)]
+    [EMOJI_TIPO] [TIPO DE INMUEBLE EN MAYÚSCULAS] EN [OPERACIÓN EN MAYÚSCULAS] EN [COLONIA EN MAYÚSCULAS] - [PRECIO]
+    📍 [Colonia]
+    ✨ [Gancho comercial breve y atractivo basado en si está amueblado, equipado, listo para habitar, excelente ubicación o zona de alta plusvalía]
 
-    📍 *Ubicación y Entorno:*
-    (Mencionar vialidades, ubicación o zonas cercanas)
+    (Luego agrupa la información del texto usando estos emojis exactos según aplique):
+    🛏️ [Detalle de recámaras, clósets o camas si tiene]
+    🚿 [Detalle de baños completos o medios baños]
+    🏠 [Planta, sala, comedor, cocina integral equipada y espacios principales]
+    🚗 [Cochera o estacionamientos con cantidad de autos]
 
-    📐 *Medidas y Distribución:*
-    • Superficie de terreno / construcción
-    • Recámaras / Estacionamientos / Baños
-    • Áreas especiales
+    ❄️ Climatización: [Minisplits, aire central, etc. si se menciona]
+    📺 Entretenimiento / Tecnología: [TVs, sistemas, etc. si se menciona]
+    🧺 Área de lavado: [Lavadora, secadora, lavadero, boiler, etc. si se menciona]
+    💧 Instalaciones y servicios: [Filtro de agua, cisterna, hidroneumático, gas, luz 110/trifásica]
+    💡 Exteriores y seguridad: [Alberca, terraza, rejas, buzón, acceso controlado si aplica]
 
-    ⚡ *Instalaciones y Equipamiento:*
-    • Detalles de servicios y equipamiento
+    (Líneas separadas si incluye servicios):
+    🧹 Mantenimiento incluido (si aplica en el texto)
+    📶 Internet incluido (si aplica en el texto)
+    💧 Agua incluida (si aplica en el texto)
 
-    📝 *Condiciones y Notas:*
-    • Solo condiciones reales del texto (ej. traspaso, crédito aplicable, etc.)
+    📲 Más información y citas por mensaje directo.
 
-    📩 *Para más información, citas o disponibilidad, envía un mensaje directo.*
     *{asesor_nombre}* - Next Bienes Raíces
 
     Devuelve un JSON estrictamente válido:
     {{
       "colonia": "...",
       "tipo_inmueble": "...",
-      "operacion": "traspaso",
+      "operacion": "...",
       "precio": "...",
       "moneda": "MXN",
       "copy_publicitario": "..."
@@ -322,14 +332,9 @@ def procesar_con_ia(url, og_title, og_desc, body_text, asesor_nombre):
                 copy = re.sub(r'\bwa\.me[^\s]*', '', copy)
                 copy = re.sub(r'\b\d{10}\b', '', copy)
                 copy = re.sub(r'(?i)\n.*(?:id\s*:\s*hmo[a-z0-9_-]+|hmor-[0-9]+|hmov-[0-9]+).*', '', copy)
-                
-                # Doble validación de seguridad: Si no es comercial, borra cualquier rastro de IVA/factura
-                tipo_extraido = str(data.get("tipo_inmueble", "")).lower()
-                es_comercial = any(tc in tipo_extraido for tc in ["local", "oficina", "bodega", "comercial", "nave"])
-                if not es_comercial:
-                    copy = re.sub(r'\s*\((?:más\s+iva\vert{}se\s+factura\vert{}facturable\vert{}iva)[^)]*\)', '', copy, flags=re.IGNORECASE)
-                    copy = re.sub(r'(?i)•.*(?:más\s+iva|factura|facturación).*\n?', '', copy)
-
+                # Garantizar cero IVA en cualquier texto
+                copy = re.sub(r'\s*\((?:más\s+iva\vert{}se\s+factura\vert{}facturable\vert{}iva)[^)]*\)', '', copy, flags=re.IGNORECASE)
+                copy = re.sub(r'(?i)•.*(?:más\s+iva|factura|facturación).*\n?', '', copy)
                 data["copy_publicitario"] = copy.strip()
             return data
         except Exception:
