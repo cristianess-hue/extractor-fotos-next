@@ -66,6 +66,41 @@ def normalizar_oracion(texto):
         t = re.sub(patron, repl, t, flags=re.IGNORECASE)
     return t
 
+def detectar_tipo_inmueble(url, og_title, body_text):
+    """Detecta el tipo de inmueble priorizando estrictamente la URL y el Título principal."""
+    fuente_url_tit = f"{url} {og_title}".lower()
+    
+    # 1. Prioridad absoluta: URL y Titular
+    if "casa" in fuente_url_tit:
+        return "Casa", "🏠"
+    if "local" in fuente_url_tit:
+        return "Local comercial", "🏢"
+    if "oficina" in fuente_url_tit:
+        return "Oficina", "🏢"
+    if "bodega" in fuente_url_tit:
+        return "Bodega", "📦"
+    if "terreno" in fuente_url_tit:
+        return "Terreno", "📐"
+    if "departamento" in fuente_url_tit or "depto" in fuente_url_tit:
+        return "Departamento", "🏢"
+
+    # 2. Respaldo por texto completo si no viene en el título/URL
+    body_low = body_text.lower()
+    if "casa" in body_low:
+        return "Casa", "🏠"
+    if "departamento" in body_low:
+        return "Departamento", "🏢"
+    if "local comercial" in body_low:
+        return "Local comercial", "🏢"
+    if "oficina" in body_low:
+        return "Oficina", "🏢"
+    if "bodega" in body_low:
+        return "Bodega", "📦"
+    if "terreno" in body_low:
+        return "Terreno", "📐"
+
+    return "Casa", "🏠"
+
 # ==========================================
 # EXTRACCIÓN Y SCRAPING
 # ==========================================
@@ -153,25 +188,21 @@ def extraer_datos_inmueble(url):
     return og_title, og_desc, texto_principal, imagenes
 
 # ==========================================
-# PARSEADOR LOCAL LIMPIO (SIN CABECERAS REDUNDANTES)
+# PARSEADOR LOCAL CON TIPOLOGÍA EXACTA
 # ==========================================
 
-def armar_ficha_local(og_title, og_desc, body_text, asesor_nombre):
+def armar_ficha_local(url, og_title, og_desc, body_text, asesor_nombre):
     texto_combinado = f"{og_title}\n{og_desc}\n{body_text}"
     texto_lower = texto_combinado.lower()
 
-    tipo = "Casa"
-    emoji_tipo = "🏠"
-    for t_raw, t_nom, emo in [("local comercial", "Local comercial", "🏢"), ("departamento", "Departamento", "🏢"), 
-                              ("oficina", "Oficina", "🏢"), ("casa", "Casa", "🏠"), ("bodega", "Bodega", "📦"), ("terreno", "Terreno", "📐")]:
-        if t_raw in texto_lower:
-            tipo = t_nom
-            emoji_tipo = emo
-            break
+    # Detección estricta y precisa del tipo
+    tipo, emoji_tipo = detectar_tipo_inmueble(url, og_title, body_text)
 
-    if "traspaso" in texto_lower or "traspasa" in texto_lower:
+    # Operación
+    fuente_operacion = f"{url} {og_title}".lower()
+    if "traspaso" in fuente_operacion or "traspasa" in texto_lower:
         operacion = "traspaso"
-    elif "renta" in texto_lower or "se renta" in texto_lower:
+    elif "renta" in fuente_operacion or "se renta" in texto_lower:
         operacion = "renta"
     else:
         operacion = "venta"
@@ -190,7 +221,7 @@ def armar_ficha_local(og_title, og_desc, body_text, asesor_nombre):
                 break
 
     if not colonia:
-        m_tit = re.search(r'en\s+([A-Za-zÁÉÍÓÚñáéíóú\s]+)', og_title, re.I)
+        m_tit = re.search(r'en\s+(?:col\.?\s+)?([A-Za-zÁÉÍÓÚñáéíóú\s]+)', og_title, re.I)
         colonia = m_tit.group(1).strip().title() if m_tit else "Hermosillo"
 
     colonia = re.sub(r'(?i)\s*(?:residencial|fraccionamiento|colonia|o piedra bola).*', '', colonia).strip()
@@ -245,7 +276,6 @@ def armar_ficha_local(og_title, og_desc, body_text, asesor_nombre):
             if not any(op in l_limp.lower() for op in ["en venta", "en renta", "en traspaso"]):
                 otros.append(l_limp)
 
-    # Encabezado directo sin triple repetición
     copy = f"{emoji_tipo} {tipo.upper()} EN {operacion.upper()} EN {colonia.upper()}{' - ' + precio if precio else ''}\n"
     copy += "✨ ¡Excelente propiedad lista para habitar!\n\n"
 
@@ -283,36 +313,40 @@ def armar_ficha_local(og_title, og_desc, body_text, asesor_nombre):
     }
 
 # ==========================================
-# ESTRUCTURACIÓN CON IA (DIRECTA Y SIN REDUNDANCIAS)
+# ESTRUCTURACIÓN CON IA (CON CONTROL DE TIPO)
 # ==========================================
 
 def procesar_con_ia(url, og_title, og_desc, body_text, asesor_nombre):
+    tipo_detectado, _ = detectar_tipo_inmueble(url, og_title, body_text)
+
     if not API_KEY:
-        return armar_ficha_local(og_title, og_desc, body_text, asesor_nombre)
+        return armar_ficha_local(url, og_title, og_desc, body_text, asesor_nombre)
 
     prompt = f"""
-    Eres un asesor inmobiliario profesional. Redacta una ficha publicitaria directa y atractiva para Facebook Marketplace.
+    Eres un asesor inmobiliario profesional de élite. Redacta una ficha publicitaria directa y atractiva para Facebook Marketplace.
 
     DATOS DE LA PROPIEDAD:
     URL: {url}
     Título: {og_title}
+    Tipo de inmueble identificado por URL/Título: {tipo_detectado}
     Descripción: {og_desc}
     Texto:
     {body_text[:4000]}
 
     Asesor: {asesor_nombre}
 
-    REGLAS DE ORO (CERO REDUNDANCIA):
-    1. INICIO DIRECTO: Empieza ÚNICAMENTE con el título en mayúsculas con su emoji y precio. NO pongas antes ninguna línea suelta en minúsculas (PROHIBIDO poner "Departamento en renta en colonia Olivares").
-    2. NO REPETIR LA COLONIA: NO pongas "📍 Colonia" abajo del título. Ya está en el título principal.
-    3. CERO EMOJIS O ASTERISCOS DUPLICADOS.
-    4. CERO IVA NI FACTURAS.
-    5. OPERACIÓN: "renta", "venta" o "traspaso".
-    6. SIN TELÉFONO NI ENLACES.
+    REGLAS DE ORO (PRECISIÓN Y CERO REDUNDANCIA):
+    1. TIPO DE INMUEBLE ESTRICTO: El tipo de inmueble es "{tipo_detectado}". Si es "Casa", NO pongas Departamento. Si en la URL dice "casa-en-venta", es una CASA.
+    2. INICIO DIRECTO: Empieza ÚNICAMENTE con el título en mayúsculas con su emoji y precio. NO pongas antes ninguna línea suelta en minúsculas.
+    3. NO REPETIR LA COLONIA: No pongas "📍 Colonia" abajo del título si ya está arriba.
+    4. CERO EMOJIS O ASTERISCOS DUPLICADOS.
+    5. CERO IVA NI FACTURAS.
+    6. OPERACIÓN: "renta", "venta" o "traspaso".
+    7. SIN TELÉFONO NI ENLACES.
 
     ESTRUCTURA EXACTA DE 'copy_publicitario':
     [EMOJI_TIPO] [TIPO EN MAYÚSCULAS] EN [OPERACIÓN EN MAYÚSCULAS] EN [COLONIA EN MAYÚSCULAS] - [PRECIO]
-    ✨ [Frase breve gancho: amueblado y equipado, excelente ubicación, amplia propiedad, etc.]
+    ✨ [Frase breve gancho atractiva]
 
     📐 Terreno: [m²] | Construcción: [m²] (si aplica)
 
@@ -324,7 +358,7 @@ def procesar_con_ia(url, og_title, og_desc, body_text, asesor_nombre):
     (Si cuenta con equipamiento especial, servicios o seguridad):
     ❄️ Climatización: [Minisplits, aire central, etc. si aplica]
     🔒 Seguridad y equipamiento: [Cámaras, alarma, portón, etc. si aplica]
-    📶 Servicios incluidos: [Internet, agua, mantenimiento, etc. si aplica]
+    📶 Servicios incluidos: [Internet, agua, etc. si aplica]
 
     📲 Más información y citas por mensaje directo.
 
@@ -332,10 +366,10 @@ def procesar_con_ia(url, og_title, og_desc, body_text, asesor_nombre):
 
     Devuelve un JSON estrictamente válido:
     {{
-      "colonia": "Olivares",
-      "tipo_inmueble": "Departamento",
-      "operacion": "renta",
-      "precio": "$3,850,000",
+      "colonia": "Villas Del Palmar",
+      "tipo_inmueble": "{tipo_detectado}",
+      "operacion": "venta",
+      "precio": "$2,350,000",
       "moneda": "MXN",
       "copy_publicitario": "..."
     }}
@@ -359,14 +393,14 @@ def procesar_con_ia(url, og_title, og_desc, body_text, asesor_nombre):
             copy = re.sub(r'(?i)\n.*(?:id\s*:\s*hmo[a-z0-9_-]+|hmor-[0-9]+|hmov-[0-9]+).*', '', copy)
             copy = re.sub(r'\s*\((?:más\s+iva\vert{}se\s+factura\vert{}facturable\vert{}iva)[^)]*\)', '', copy, flags=re.IGNORECASE)
             copy = re.sub(r'([🏠🛏️🚿🚗❄️🌳🔹🔺])\s*[\*\•\-]?\s*([🏠🛏️🚿🚗❄️🌳])', r'\1', copy)
-            # Asegurar que no empiece con frase duplicada en minúsculas
             copy = re.sub(r'^(?:casa|departamento|local|oficina|bodega|terreno)\s+en\s+(?:renta|venta|traspaso)[^\n]*\n+', '', copy, flags=re.IGNORECASE)
             data["copy_publicitario"] = copy.strip()
+            data["tipo_inmueble"] = tipo_detectado  # Forzar tipo exacto
             return data
     except Exception:
         pass
 
-    return armar_ficha_local(og_title, og_desc, body_text, asesor_nombre)
+    return armar_ficha_local(url, og_title, og_desc, body_text, asesor_nombre)
 
 # ==========================================
 # DESCARGA PROXY (CONVERSIÓN A BYTES)
