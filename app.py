@@ -44,6 +44,10 @@ def generar_prefijo_foto(datos):
 
 def normalizar_oracion(texto):
     t = texto.strip()
+    # Eliminar viñetas, asteriscos o emojis al inicio
+    t = re.sub(r'^[\*\•\-\–\—\s\.\:\,\;]+', '', t).strip()
+    # Limpiar emojis del inicio si ya los traía el portal
+    t = re.sub(r'^[\U00010000-\U0010ffff\u2600-\u27ff\u2300-\u23ff\s]+', '', t).strip()
     if not t:
         return ""
     if t.isupper() or sum(1 for c in t if c.isupper()) > len(t) * 0.6:
@@ -55,7 +59,10 @@ def normalizar_oracion(texto):
         r'\bsonora\b': 'Sonora',
         r'\bmexico\b': 'México',
         r'\bblvd\.?\b': 'Blvd.',
-        r'\bm2\b': 'm²'
+        r'\biva\b': 'IVA',
+        r'\bm2\b': 'm²',
+        r'\bfovissste\b': 'FOVISSSTE',
+        r'\binfonavit\b': 'INFONAVIT'
     }
     for patron, repl in reemplazos.items():
         t = re.sub(patron, repl, t, flags=re.IGNORECASE)
@@ -148,7 +155,7 @@ def extraer_datos_inmueble(url):
     return og_title, og_desc, texto_principal, imagenes
 
 # ==========================================
-# PARSEADOR LOCAL DE RESPALDO (FORMATO MARKETPLACE)
+# PARSEADOR LOCAL DE RESPALDO (SIN REPETICIONES)
 # ==========================================
 
 def armar_ficha_local(og_title, og_desc, body_text, asesor_nombre):
@@ -173,7 +180,7 @@ def armar_ficha_local(og_title, og_desc, body_text, asesor_nombre):
     else:
         operacion = "venta"
 
-    # 3. Colonia dinámica
+    # 3. Colonia limpia
     colonia = ""
     patrones_col = [
         r'(?:colonia|col\.?|fraccionamiento|fracc\.?|residencial)\s+([A-Za-zÁÉÍÓÚñáéíóú0-9\s]+?)(?:\n|,|\.|\-)',
@@ -183,75 +190,100 @@ def armar_ficha_local(og_title, og_desc, body_text, asesor_nombre):
         match_col = re.search(p, texto_combinado, re.IGNORECASE)
         if match_col:
             c_cand = match_col.group(1).strip()
-            if len(c_cand) > 2 and c_cand.lower() not in ["renta", "venta", "traspaso", "hermosillo"]:
+            if len(c_cand) > 2 and c_cand.lower() not in ["renta", "venta", "traspaso", "hermosillo", "sonora", "méxico", "mexico"]:
                 colonia = c_cand.title()
                 break
 
     if not colonia:
-        colonia = "Hermosillo"
+        # Extraer del título si es posible (ej: casa-en-venta-en-la-cima)
+        m_tit = re.search(r'en\s+([A-Za-zÁÉÍÓÚñáéíóú\s]+)', og_title, re.I)
+        colonia = m_tit.group(1).strip().title() if m_tit else "Hermosillo"
 
-    # 4. Precio
+    # 4. Precio limpio
     p_match = re.search(r'\$\s*([0-9]{1,3}(?:,[0-9]{3})+)', texto_combinado)
     precio = f"${p_match.group(1)}" if p_match else ""
 
-    lineas = [l.strip() for l in body_text.split("\n") if len(l.strip()) > 3]
-    caracteristicas = []
+    lineas = [l.strip() for l in body_text.split("\n") if len(l.strip()) > 2]
     
+    # Palabras y patrones prohibidos para evitar duplicaciones
     descartar = [
         "next", "inmobiliaria", "contacto", "teléfono", "whatsapp", "descripción", 
         "derechos", "aviso", "buscar", "precio", "id:", "hmor-", "hmov-", 
         "contactar vía", "enviar", "propiedades relacionadas", "completa tus datos", 
-        "cancelar", "aceptar", "ver en mapa", "características", "medios baños", "iva", "factura"
+        "cancelar", "aceptar", "ver en mapa", "características", "medios baños", "iva", "factura",
+        "hermosillo sonora", "83105", "83000", "c.p.", "código postal"
     ]
     
+    caracteristicas_vistas = set()
+    bloque_distribucion = []
+    bloque_amenidades = []
+    bloque_legal = []
+
     for l in lineas:
-        l_low = l.lower()
-        if any(d in l_low for d in descartar):
+        l_low = l.lower().strip()
+        # Evitar líneas que solo dicen "Venta", "Renta" o el nombre de la colonia
+        if l_low in ["venta", "renta", "traspaso", colonia.lower(), f"{colonia.lower()} residencial", "casa"]:
             continue
-        if not l.startswith("$") and len(l) < 140:
-            l_limpia = normalizar_oracion(l)
-            if l_limpia not in caracteristicas and not any(op in l_limpia.lower() for op in ["en renta", "en venta", "en traspaso"]):
-                caracteristicas.append(l_limpia)
-
-    # Armado con el nuevo diseño
-    copy = f"{tipo} en {operacion} en colonia {colonia}\n\n"
-    copy += f"{emoji_tipo} {tipo.upper()} EN {operacion.upper()} EN {colonia.upper()} - {precio}\n"
-    copy += f"📍 {colonia}\n"
-    copy += "✨ ¡Excelente oportunidad lista para habitar o comenzar tu proyecto!\n\n"
-
-    for c in caracteristicas:
-        c_low = c.lower()
-        if "recámara" in c_low or "recamara" in c_low or "habitaci" in c_low:
-            copy += f"🛏️ {c}\n"
-        elif "baño" in c_low:
-            copy += f"🚿 {c}\n"
-        elif "cochera" in c_low or "auto" in c_low or "estacionamiento" in c_low:
-            copy += f"🚗 {c}\n"
-        elif "minisplit" in c_low or "aire" in c_low or "clima" in c_low:
-            copy += f"❄️ Climatización: {c}\n"
-        elif "lavad" in c_low:
-            copy += f"🧺 Área de lavado: {c}\n"
-        elif "agua" in c_low or "boiler" in c_low or "gas" in c_low or "luz" in c_low:
-            copy += f"💧 Instalaciones y servicios: {c}\n"
-        elif "internet" in c_low or "wifi" in c_low:
-            copy += f"📶 {c}\n"
-        elif "mantenimiento" in c_low:
-            copy += f"🧹 {c}\n"
+        if any(d in l_low for d in descartar) or l.startswith("$") or len(l) > 140:
+            continue
+        
+        l_limpia = normalizar_oracion(l)
+        if not l_limpia or l_limpia.lower() in caracteristicas_vistas:
+            continue
+        
+        # Evitar repetir "casa en venta..." en el cuerpo
+        if any(p in l_limpia.lower() for p in ["en venta", "en renta", "en traspaso"]):
+            continue
+        
+        caracteristicas_vistas.add(l_limpia.lower())
+        
+        # Clasificar sin duplicar prefijos de emojis
+        if any(w in l_low for w in ["crédito", "credito", "hipotecario", "gravamen", "fovissste", "infonavit", "banco", "santander", "scotiabank"]):
+            bloque_legal.append(f"📄 {l_limpia}")
+        elif any(w in l_low for w in ["parque", "área verde", "areas verdes", "juegos infantiles", "alberca", "vigilancia", "acceso controlado", "amenidades"]):
+            bloque_amenidades.append(f"🌳 {l_limpia}")
+        elif any(w in l_low for w in ["habitación", "habitaciones", "recámara", "recamaras", "dormitorio"]):
+            bloque_distribucion.append(f"🛏️ {l_limpia}")
+        elif any(w in l_low for w in ["baño", "regadera", "w.c."]):
+            bloque_distribucion.append(f"🚿 {l_limpia}")
+        elif any(w in l_low for w in ["planta", "nivel", "estancia", "patio", "sala", "comedor", "cocina"]):
+            bloque_distribucion.append(f"🏠 {l_limpia}")
+        elif any(w in l_low for w in ["cochera", "auto", "estacionamiento", "estac"]):
+            bloque_distribucion.append(f"🚗 {l_limpia}")
+        elif any(w in l_low for w in ["minisplit", "aire", "clima"]):
+            bloque_distribucion.append(f"❄️ {l_limpia}")
         else:
-            copy += f"🏠 {c}\n"
+            bloque_distribucion.append(f"✨ {l_limpia}")
 
-    copy += f"\n📲 Más información y citas por mensaje directo.\n\n*{asesor_nombre}* - Next Bienes Raíces"
+    # Armado limpio, directo y sin redundancia
+    copy = f"{tipo} en {operacion} en colonia {colonia}\n\n"
+    copy += f"{emoji_tipo} {tipo.upper()} EN {operacion.upper()} EN {colonia.upper()}{' - ' + precio if precio else ''}\n"
+    copy += f"📍 {colonia}\n"
+    copy += "✨ ¡Excelente propiedad lista para habitar!\n\n"
+
+    if bloque_distribucion:
+        copy += "\n".join(bloque_distribucion) + "\n\n"
+
+    if bloque_amenidades:
+        copy += "🔹 *Amenidades y Privada:*\n"
+        copy += "\n".join(bloque_amenidades) + "\n\n"
+
+    if bloque_legal:
+        copy += "🔺 *Condiciones y Créditos:*\n"
+        copy += "\n".join(bloque_legal) + "\n\n"
+
+    copy += f"📲 Más información y citas por mensaje directo.\n\n*{asesor_nombre}* - Next Bienes Raíces"
 
     return {
         "colonia": colonia,
         "tipo_inmueble": tipo,
         "operacion": operacion,
         "precio": precio,
-        "copy_publicitario": copy
+        "copy_publicitario": copy.strip()
     }
 
 # ==========================================
-# ESTRUCTURACIÓN CON IA (NUEVO FORMATO EMOJIS)
+# ESTRUCTURACIÓN CON IA (FORMATO ESTRICTO)
 # ==========================================
 
 def procesar_con_ia(url, og_title, og_desc, body_text, asesor_nombre):
@@ -260,7 +292,7 @@ def procesar_con_ia(url, og_title, og_desc, body_text, asesor_nombre):
 
     client = genai.Client(api_key=API_KEY)
     prompt = f"""
-    Eres un asesor inmobiliario profesional de élite. Redacta una ficha publicitaria moderna, limpia y atractiva para Facebook Marketplace usando emojis temáticos por categoría.
+    Eres un asesor inmobiliario profesional de élite. Redacta una ficha publicitaria limpia, moderna y profesional para Facebook Marketplace.
 
     DATOS DE LA PROPIEDAD:
     URL: {url}
@@ -271,47 +303,46 @@ def procesar_con_ia(url, og_title, og_desc, body_text, asesor_nombre):
 
     Asesor: {asesor_nombre}
 
-    REGLAS CRÍTICAS:
-    1. PROHIBIDO TOTALMENTE EL IVA: NUNCA pongas "más IVA", "IVA incluido", "se factura" ni nada relacionado con impuestos. El precio va directo y limpio.
-    2. OPERACIÓN: Si dice "traspaso" o "se traspasa", la operación DEBE ser "traspaso" (en minúsculas), aunque el portal diga venta. Si no, usa "renta" o "venta".
-    3. COLONIA: Extrae el nombre exacto de la colonia o residencial (ej: Praga Residencial, Balderrama, San Benito, Constitución).
-    4. SIN TELÉFONO NI LINKS: No enlaces wa.me, ni teléfonos directos.
-    5. CERO ALUCINACIONES: Incluye todos los datos reales (recámaras, baños, cochera, electrodomésticos, climas, terraza, servicios incluidos).
+    REGLAS ESTRICTAS DE REDACCIÓN (ANTI-REDUNDANCIA):
+    1. CERO REPETICIÓN: NUNCA repitas líneas que solo digan "Venta", "Renta", ni la dirección postal (ej. "La Cima Residencial, 83105 Hermosillo Sonora") si ya se indicó la colonia.
+    2. CERO EMOJIS O ASTERISCOS DUPLICADOS: No escribas "🏠 * 🛏️" ni "🛏️ * 🛏️". Cada viñeta debe llevar UN SOLO emoji adecuado a su categoría.
+    3. PROHIBIDO TOTALMENTE EL IVA: No pongas nada de IVA, impuestos o factura.
+    4. OPERACIÓN: "renta", "venta" o "traspaso" (si el título o texto indica traspaso).
+    5. SIN TELÉFONO NI ENLACES EXTERNOS.
+    6. ESTRUCTURA REQUERIDA PARA 'copy_publicitario':
+       [Tipo de inmueble] en [operación] en colonia [Nombre de la Colonia]
 
-    ESTRUCTURA EXACTA DE 'copy_publicitario' QUE DEBES GENERAR:
-    [Tipo de inmueble] en [operación] en colonia [Nombre de la Colonia]
+       [EMOJI_TIPO] [TIPO EN MAYÚSCULAS] EN [OPERACIÓN EN MAYÚSCULAS] EN [COLONIA EN MAYÚSCULAS] - [PRECIO]
+       📍 [Colonia]
+       ✨ [Frase breve atractiva: lista para habitar, excelente ubicación, etc.]
 
-    [EMOJI_TIPO] [TIPO DE INMUEBLE EN MAYÚSCULAS] EN [OPERACIÓN EN MAYÚSCULAS] EN [COLONIA EN MAYÚSCULAS] - [PRECIO]
-    📍 [Colonia]
-    ✨ [Gancho comercial breve y atractivo basado en si está amueblado, equipado, listo para habitar, excelente ubicación o zona de alta plusvalía]
+       (Espacios y distribución con sus emojis respectivos):
+       🛏️ [Cantidad de habitaciones]
+       🚿 [Cantidad de baños / regaderas / medios baños]
+       🏠 [Plantas, estancia, patio, sala, cocina]
+       🚗 [Cochera o estacionamiento]
 
-    (Luego agrupa la información del texto usando estos emojis exactos según aplique):
-    🛏️ [Detalle de recámaras, clósets o camas si tiene]
-    🚿 [Detalle de baños completos o medios baños]
-    🏠 [Planta, sala, comedor, cocina integral equipada y espacios principales]
-    🚗 [Cochera o estacionamientos con cantidad de autos]
+       (Amenidades si la privada las tiene):
+       🔹 *Amenidades de la residencial:*
+       🌳 Parque y áreas verdes
+       🎈 Juegos infantiles
+       🛡️ Acceso controlado y vigilancia
 
-    ❄️ Climatización: [Minisplits, aire central, etc. si se menciona]
-    📺 Entretenimiento / Tecnología: [TVs, sistemas, etc. si se menciona]
-    🧺 Área de lavado: [Lavadora, secadora, lavadero, boiler, etc. si se menciona]
-    💧 Instalaciones y servicios: [Filtro de agua, cisterna, hidroneumático, gas, luz 110/trifásica]
-    💡 Exteriores y seguridad: [Alberca, terraza, rejas, buzón, acceso controlado si aplica]
+       (Condiciones de pago si se mencionan):
+       🔺 *Condiciones de compra:*
+       • Créditos aceptados (Santander, Scotiabank, etc.)
+       • Estatus de gravamen (FOVISSSTE, INFONAVIT, etc.)
 
-    (Líneas separadas si incluye servicios):
-    🧹 Mantenimiento incluido (si aplica en el texto)
-    📶 Internet incluido (si aplica en el texto)
-    💧 Agua incluida (si aplica en el texto)
+       📲 Más información y citas por mensaje directo.
 
-    📲 Más información y citas por mensaje directo.
-
-    *{asesor_nombre}* - Next Bienes Raíces
+       *{asesor_nombre}* - Next Bienes Raíces
 
     Devuelve un JSON estrictamente válido:
     {{
-      "colonia": "...",
-      "tipo_inmueble": "...",
-      "operacion": "...",
-      "precio": "...",
+      "colonia": "La Cima",
+      "tipo_inmueble": "Casa",
+      "operacion": "venta",
+      "precio": "$2,650,000",
       "moneda": "MXN",
       "copy_publicitario": "..."
     }}
@@ -332,9 +363,9 @@ def procesar_con_ia(url, og_title, og_desc, body_text, asesor_nombre):
                 copy = re.sub(r'\bwa\.me[^\s]*', '', copy)
                 copy = re.sub(r'\b\d{10}\b', '', copy)
                 copy = re.sub(r'(?i)\n.*(?:id\s*:\s*hmo[a-z0-9_-]+|hmor-[0-9]+|hmov-[0-9]+).*', '', copy)
-                # Garantizar cero IVA en cualquier texto
                 copy = re.sub(r'\s*\((?:más\s+iva\vert{}se\s+factura\vert{}facturable\vert{}iva)[^)]*\)', '', copy, flags=re.IGNORECASE)
-                copy = re.sub(r'(?i)•.*(?:más\s+iva|factura|facturación).*\n?', '', copy)
+                # Limpiar emojis duplicados accidentales
+                copy = re.sub(r'([🏠🛏️🚿🚗❄️🌳🔹🔺])\s*[\*\•\-]?\s*([🏠🛏️🚿🚗❄️🌳])', r'\1', copy)
                 data["copy_publicitario"] = copy.strip()
             return data
         except Exception:
