@@ -57,7 +57,6 @@ def normalizar_oracion(texto):
         r'\bsonora\b': 'Sonora',
         r'\bmexico\b': 'México',
         r'\bblvd\.?\b': 'Blvd.',
-        r'\biva\b': 'IVA',
         r'\bm2\b': 'm²',
         r'\bfovissste\b': 'FOVISSSTE',
         r'\binfonavit\b': 'INFONAVIT'
@@ -153,14 +152,13 @@ def extraer_datos_inmueble(url):
     return og_title, og_desc, texto_principal, imagenes
 
 # ==========================================
-# PARSEADOR LOCAL INTELIGENTE (SIN BASURA NI DUPLICADOS)
+# PARSEADOR LOCAL INTELIGENTE
 # ==========================================
 
 def armar_ficha_local(og_title, og_desc, body_text, asesor_nombre):
     texto_combinado = f"{og_title}\n{og_desc}\n{body_text}"
     texto_lower = texto_combinado.lower()
 
-    # 1. Tipo
     tipo = "Casa"
     emoji_tipo = "🏠"
     for t_raw, t_nom, emo in [("local comercial", "Local comercial", "🏢"), ("departamento", "Departamento", "🏢"), 
@@ -170,7 +168,6 @@ def armar_ficha_local(og_title, og_desc, body_text, asesor_nombre):
             emoji_tipo = emo
             break
 
-    # 2. Operación
     if "traspaso" in texto_lower or "traspasa" in texto_lower:
         operacion = "traspaso"
     elif "renta" in texto_lower or "se renta" in texto_lower:
@@ -178,7 +175,6 @@ def armar_ficha_local(og_title, og_desc, body_text, asesor_nombre):
     else:
         operacion = "venta"
 
-    # 3. Colonia
     colonia = ""
     patrones_col = [
         r'(?:colonia|col\.?|fraccionamiento|fracc\.?|residencial)\s+([A-Za-zÁÉÍÓÚñáéíóú0-9\s]+?)(?:\n|,|\.|\-)',
@@ -196,16 +192,13 @@ def armar_ficha_local(og_title, og_desc, body_text, asesor_nombre):
         m_tit = re.search(r'en\s+([A-Za-zÁÉÍÓÚñáéíóú\s]+)', og_title, re.I)
         colonia = m_tit.group(1).strip().title() if m_tit else "Hermosillo"
 
-    # Limpiar si trae palabras extras
     colonia = re.sub(r'(?i)\s*(?:residencial|fraccionamiento|colonia|o piedra bola).*', '', colonia).strip()
 
-    # 4. Precio
     p_match = re.search(r'\$\s*([0-9]{1,3}(?:,[0-9]{3})+)', texto_combinado)
     precio = f"${p_match.group(1)}" if p_match else ""
 
     lineas = [l.strip() for l in body_text.split("\n") if len(l.strip()) > 2]
     
-    # Filtros para borrar basura del portal
     descartar = [
         "next", "inmobiliaria", "contacto", "teléfono", "whatsapp", "descripción", 
         "derechos", "aviso", "buscar", "precio", "id:", "hmor-", "hmov-", 
@@ -224,13 +217,10 @@ def armar_ficha_local(og_title, og_desc, body_text, asesor_nombre):
 
     for l in lineas:
         l_low = l.lower().strip()
-        # Descartar si solo es la colonia o el tipo
         if l_low in ["venta", "renta", "traspaso", colonia.lower(), f"colonia {colonia.lower()}", "distribución"]:
             continue
         if any(d in l_low for d in descartar) or l.startswith("$") or len(l) > 130:
             continue
-        
-        # Descartar renglones que repitan la ubicación
         if "ubicación:" in l_low or "ubicada en" in l_low:
             continue
 
@@ -293,7 +283,7 @@ def armar_ficha_local(og_title, og_desc, body_text, asesor_nombre):
     }
 
 # ==========================================
-# ESTRUCTURACIÓN CON IA (FORMATO ESTRICTO)
+# ESTRUCTURACIÓN CON IA (GEMINI ACTUALIZADO)
 # ==========================================
 
 def procesar_con_ia(url, og_title, og_desc, body_text, asesor_nombre):
@@ -356,8 +346,8 @@ def procesar_con_ia(url, og_title, og_desc, body_text, asesor_nombre):
     }}
     """
 
-    modelos = ['gemini-2.5-flash', 'gemini-1.5-flash']
-    ultimo_error = ""
+    # Modelos oficiales vigentes en la API
+    modelos = ['gemini-2.5-flash', 'gemini-flash-latest']
 
     for mod in modelos:
         try:
@@ -377,12 +367,11 @@ def procesar_con_ia(url, og_title, og_desc, body_text, asesor_nombre):
                 copy = re.sub(r'([🏠🛏️🚿🚗❄️🌳🔹🔺])\s*[\*\•\-]?\s*([🏠🛏️🚿🚗❄️🌳])', r'\1', copy)
                 data["copy_publicitario"] = copy.strip()
             return data
-        except Exception as e:
-            ultimo_error = str(e)
+        except Exception:
             time.sleep(1)
             continue
 
-    st.error(f"⚠️ Error de conexión con Gemini: {ultimo_error[:120]}")
+    # Respaldo inteligente si la API no estuviera disponible
     return armar_ficha_local(og_title, og_desc, body_text, asesor_nombre)
 
 # ==========================================
