@@ -57,6 +57,7 @@ def normalizar_oracion(texto):
         r'\bsonora\b': 'Sonora',
         r'\bmexico\b': 'México',
         r'\bblvd\.?\b': 'Blvd.',
+        r'\biva\b': 'IVA',
         r'\bm2\b': 'm²',
         r'\bfovissste\b': 'FOVISSSTE',
         r'\binfonavit\b': 'INFONAVIT'
@@ -66,7 +67,7 @@ def normalizar_oracion(texto):
     return t
 
 # ==========================================
-# EXTRACCIÓN Y SCRAPING RÁPIDO CON TIMEOUT
+# EXTRACCIÓN Y SCRAPING
 # ==========================================
 
 def extraer_datos_inmueble(url):
@@ -75,7 +76,6 @@ def extraer_datos_inmueble(url):
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
         "Accept-Language": "es-ES,es;q=0.9"
     }
-    # Timeout de conexión: 5 segundos, lectura: 10 segundos
     resp = requests.get(url, headers=headers, timeout=(5, 10))
     resp.encoding = 'utf-8'
     soup = BeautifulSoup(resp.text, 'html.parser')
@@ -153,7 +153,7 @@ def extraer_datos_inmueble(url):
     return og_title, og_desc, texto_principal, imagenes
 
 # ==========================================
-# PARSEADOR LOCAL INTELIGENTE
+# PARSEADOR LOCAL LIMPIO (SIN CABECERAS REDUNDANTES)
 # ==========================================
 
 def armar_ficha_local(og_title, og_desc, body_text, asesor_nombre):
@@ -245,9 +245,8 @@ def armar_ficha_local(og_title, og_desc, body_text, asesor_nombre):
             if not any(op in l_limp.lower() for op in ["en venta", "en renta", "en traspaso"]):
                 otros.append(l_limp)
 
-    copy = f"{tipo} en {operacion} en colonia {colonia}\n\n"
-    copy += f"{emoji_tipo} {tipo.upper()} EN {operacion.upper()} EN {colonia.upper()}{' - ' + precio if precio else ''}\n"
-    copy += f"📍 {colonia}\n"
+    # Encabezado directo sin triple repetición
+    copy = f"{emoji_tipo} {tipo.upper()} EN {operacion.upper()} EN {colonia.upper()}{' - ' + precio if precio else ''}\n"
     copy += "✨ ¡Excelente propiedad lista para habitar!\n\n"
 
     if superficie:
@@ -284,7 +283,7 @@ def armar_ficha_local(og_title, og_desc, body_text, asesor_nombre):
     }
 
 # ==========================================
-# ESTRUCTURACIÓN CON IA (CON TIMEOUT CONTROLADO)
+# ESTRUCTURACIÓN CON IA (DIRECTA Y SIN REDUNDANCIAS)
 # ==========================================
 
 def procesar_con_ia(url, og_title, og_desc, body_text, asesor_nombre):
@@ -292,7 +291,7 @@ def procesar_con_ia(url, og_title, og_desc, body_text, asesor_nombre):
         return armar_ficha_local(og_title, og_desc, body_text, asesor_nombre)
 
     prompt = f"""
-    Eres un asesor inmobiliario profesional. Redacta una ficha publicitaria limpia y moderna para Facebook Marketplace.
+    Eres un asesor inmobiliario profesional. Redacta una ficha publicitaria directa y atractiva para Facebook Marketplace.
 
     DATOS DE LA PROPIEDAD:
     URL: {url}
@@ -303,32 +302,29 @@ def procesar_con_ia(url, og_title, og_desc, body_text, asesor_nombre):
 
     Asesor: {asesor_nombre}
 
-    REGLAS ESTRICTAS:
-    1. CERO REPETICIÓN: No repitas renglones con la colonia, ni códigos postales, ni "Sonora, México".
-    2. CERO EMOJIS O ASTERISCOS DUPLICADOS: No escribas "🏠 * 🛏️". Solo un emoji por renglón.
-    3. CERO TEXTOS PLANOS COMO "Distribución" en viñetas.
-    4. PROHIBIDO EL IVA: Cero menciones de IVA o factura.
-    5. OPERACIÓN: "renta", "venta" o "traspaso" (si el título o texto indica traspaso).
-    6. SIN TELÉFONO NI ENLACES EXTERNOS.
+    REGLAS DE ORO (CERO REDUNDANCIA):
+    1. INICIO DIRECTO: Empieza ÚNICAMENTE con el título en mayúsculas con su emoji y precio. NO pongas antes ninguna línea suelta en minúsculas (PROHIBIDO poner "Departamento en renta en colonia Olivares").
+    2. NO REPETIR LA COLONIA: NO pongas "📍 Colonia" abajo del título. Ya está en el título principal.
+    3. CERO EMOJIS O ASTERISCOS DUPLICADOS.
+    4. CERO IVA NI FACTURAS.
+    5. OPERACIÓN: "renta", "venta" o "traspaso".
+    6. SIN TELÉFONO NI ENLACES.
 
     ESTRUCTURA EXACTA DE 'copy_publicitario':
-    [Tipo de inmueble] en [operación] en colonia [Nombre de la Colonia]
-
     [EMOJI_TIPO] [TIPO EN MAYÚSCULAS] EN [OPERACIÓN EN MAYÚSCULAS] EN [COLONIA EN MAYÚSCULAS] - [PRECIO]
-    📍 [Colonia]
-    ✨ [Frase breve atractiva: lista para habitar, excelente ubicación, amplia propiedad, etc.]
+    ✨ [Frase breve gancho: amueblado y equipado, excelente ubicación, amplia propiedad, etc.]
 
     📐 Terreno: [m²] | Construcción: [m²] (si aplica)
 
-    🛏️ [Cantidad de recámaras]
+    🛏️ [Cantidad de recámaras y detalles]
     🚿 [Cantidad de baños]
     🚗 [Cochera o estacionamiento]
-    🏠 Espacios: [Agrupa sala, comedor, cocina, estancia, patio, lavandería]
+    🏠 Espacios: [Agrupa sala, comedor, cocina integral, estancia, patio, etc.]
 
-    (Si cuenta con seguridad o equipamiento):
-    🔒 Seguridad y equipamiento:
-    • [Detalle 1]
-    • [Detalle 2]
+    (Si cuenta con equipamiento especial, servicios o seguridad):
+    ❄️ Climatización: [Minisplits, aire central, etc. si aplica]
+    🔒 Seguridad y equipamiento: [Cámaras, alarma, portón, etc. si aplica]
+    📶 Servicios incluidos: [Internet, agua, mantenimiento, etc. si aplica]
 
     📲 Más información y citas por mensaje directo.
 
@@ -336,10 +332,10 @@ def procesar_con_ia(url, og_title, og_desc, body_text, asesor_nombre):
 
     Devuelve un JSON estrictamente válido:
     {{
-      "colonia": "...",
-      "tipo_inmueble": "...",
-      "operacion": "...",
-      "precio": "...",
+      "colonia": "Olivares",
+      "tipo_inmueble": "Departamento",
+      "operacion": "renta",
+      "precio": "$3,850,000",
       "moneda": "MXN",
       "copy_publicitario": "..."
     }}
@@ -363,12 +359,13 @@ def procesar_con_ia(url, og_title, og_desc, body_text, asesor_nombre):
             copy = re.sub(r'(?i)\n.*(?:id\s*:\s*hmo[a-z0-9_-]+|hmor-[0-9]+|hmov-[0-9]+).*', '', copy)
             copy = re.sub(r'\s*\((?:más\s+iva\vert{}se\s+factura\vert{}facturable\vert{}iva)[^)]*\)', '', copy, flags=re.IGNORECASE)
             copy = re.sub(r'([🏠🛏️🚿🚗❄️🌳🔹🔺])\s*[\*\•\-]?\s*([🏠🛏️🚿🚗❄️🌳])', r'\1', copy)
+            # Asegurar que no empiece con frase duplicada en minúsculas
+            copy = re.sub(r'^(?:casa|departamento|local|oficina|bodega|terreno)\s+en\s+(?:renta|venta|traspaso)[^\n]*\n+', '', copy, flags=re.IGNORECASE)
             data["copy_publicitario"] = copy.strip()
             return data
     except Exception:
         pass
 
-    # Si la API tarda o falla, cae de inmediato al parseador local sin trabar el hilo
     return armar_ficha_local(og_title, og_desc, body_text, asesor_nombre)
 
 # ==========================================
