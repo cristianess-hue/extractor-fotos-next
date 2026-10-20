@@ -83,10 +83,10 @@ def detectar_tipo_inmueble(url, og_title, body_text):
         return "Departamento", "🏢"
 
     body_low = body_text.lower()
-    if "casa" in body_low:
-        return "Casa", "🏠"
     if "departamento" in body_low:
         return "Departamento", "🏢"
+    if "casa" in body_low:
+        return "Casa", "🏠"
     if "local comercial" in body_low:
         return "Local comercial", "🏢"
     if "oficina" in body_low:
@@ -98,35 +98,44 @@ def detectar_tipo_inmueble(url, og_title, body_text):
 
     return "Casa", "🏠"
 
-def limpiar_nombre_colonia(colonia_candidata, body_text):
-    """Limpia a fondo el nombre de la colonia evitando que contenga 'casa en renta', etc."""
-    c = str(colonia_candidata).strip()
-    
-    # Remover palabras operativas que no son colonias
-    c = re.sub(r'(?i)\b(?:casa|departamento|local|oficina|bodega|terreno)\s+en\s+(?:renta|venta|traspaso)\s*(?:en)?\b', '', c).strip()
-    c = re.sub(r'(?i)\b(?:en\s+renta|en\s+venta|en\s+traspaso|se\s+renta|se\s+vende)\b', '', c).strip()
-    c = re.sub(r'(?i)\s*(?:residencial|fraccionamiento|colonia|o piedra bola).*', '', c).strip()
-    c = re.sub(r'(?i)\b(?:hermosillo|sonora|mexico|méxico)\b', '', c).strip(',. -')
+def extraer_colonia_real(url, og_title, body_text):
+    """
+    Extrae la colonia dando prioridad a la URL y al título real del asesor,
+    evitando los errores de captura del sistema interno de Next.
+    """
+    # 1. De la URL directa (ej: departamento-en-renta-en-col-prados-del-sol-34931)
+    m_url = re.search(r'(?:en-col-|en-colonia-|en-fracc-|en-fraccionamiento-|en-residencial-|en-)([a-z0-9\-]+?)(?:-[0-9]{3,7})?$', url.lower().split('?')[0])
+    if m_url:
+        cand_url = m_url.group(1).replace('-', ' ').strip()
+        cand_url = re.sub(r'\b(?:casa|departamento|local|oficina|bodega|terreno|renta|venta|traspaso|col|hermosillo)\b', '', cand_url).strip()
+        if len(cand_url) > 2:
+            return cand_url.title()
 
-    # Si quedó vacía o demasiado genérica, buscar en el cuerpo del texto
-    if not c or len(c) < 3 or c.lower() in ["hermosillo", "sonora", "propiedad", "renta", "venta"]:
-        patrones = [
-            r'(?:colonia|col\.?|fraccionamiento|fracc\.?|residencial)\s+([A-Za-zÁÉÍÓÚñáéíóú0-9\s]+?)(?:\n|,|\.|\-)',
-            r'(?:ubicada en|ubicado en|zona)\s+([A-Za-zÁÉÍÓÚñáéíóú0-9\s]+?)(?:,\s*hermosillo|\n|\.|\-)'
-        ]
-        for p in patrones:
-            m = re.search(p, body_text, re.IGNORECASE)
-            if m:
-                cand = m.group(1).strip()
-                cand_clean = re.sub(r'(?i)\b(?:casa|departamento|renta|venta|hermosillo|sonora)\b', '', cand).strip()
-                if len(cand_clean) >= 3:
-                    c = cand_clean
-                    break
+    # 2. Del Título Principal (ej: DEPARTAMENTO EN RENTA EN COL. PRADOS DEL SOL)
+    m_tit = re.search(r'en\s+(?:col\.?\s+|colonia\s+|fracc\.?\s+|residencial\s+)?([A-Za-zÁÉÍÓÚñáéíóú0-9\s]+)', og_title, re.IGNORECASE)
+    if m_tit:
+        cand_tit = m_tit.group(1).strip()
+        cand_tit = re.sub(r'(?i)\b(?:casa|departamento|local|oficina|bodega|terreno|renta|venta|traspaso|col|colonia|en)\b', '', cand_tit).strip()
+        if len(cand_tit) > 2 and cand_tit.lower() not in ["hermosillo", "sonora"]:
+            return cand_tit.title()
 
-    if not c or len(c) < 3:
-        c = "Hermosillo"
+    # 3. De la línea de dirección geográfica (ej: Prados del Sol, 83100 Hermosillo, Son., México)
+    m_dir = re.search(r'([A-Za-zÁÉÍÓÚñáéíóú0-9\s]+?),\s*[0-9]{5}\s+Hermosillo', body_text, re.IGNORECASE)
+    if m_dir:
+        cand_dir = m_dir.group(1).strip()
+        cand_dir = re.sub(r'(?i)\b(?:ubicación|ubicacion|colonia|col\.?)\b', '', cand_dir).strip(' :.-')
+        if len(cand_dir) > 2:
+            return cand_dir.title()
 
-    return c.title()
+    # 4. Búsqueda en texto por etiquetas
+    m_txt = re.search(r'(?:en\s+col\.?\s+|colonia\s+|fraccionamiento\s+|residencial\s+)([A-Za-zÁÉÍÓÚñáéíóú0-9\s]+?)(?:,|\.|\n|-)', body_text, re.IGNORECASE)
+    if m_txt:
+        cand_txt = m_txt.group(1).strip()
+        cand_txt = re.sub(r'(?i)\b(?:casa|departamento|renta|venta|hermosillo|sonora)\b', '', cand_txt).strip()
+        if len(cand_txt) > 2:
+            return cand_txt.title()
+
+    return "Hermosillo"
 
 # ==========================================
 # EXTRACCIÓN Y SCRAPING
@@ -215,7 +224,7 @@ def extraer_datos_inmueble(url):
     return og_title, og_desc, texto_principal, imagenes
 
 # ==========================================
-# PARSEADOR LOCAL LIMPIO Y NO REDUNDANTE
+# PARSEADOR LOCAL LIMPIO
 # ==========================================
 
 def armar_ficha_local(url, og_title, og_desc, body_text, asesor_nombre):
@@ -232,10 +241,8 @@ def armar_ficha_local(url, og_title, og_desc, body_text, asesor_nombre):
     else:
         operacion = "venta"
 
-    # Extracción y limpieza exhaustiva de colonia
-    m_tit = re.search(r'en\s+(?:col\.?\s+)?([A-Za-zÁÉÍÓÚñáéíóú0-9\s]+)', og_title, re.I)
-    cand_col = m_tit.group(1).strip() if m_tit else ""
-    colonia = limpiar_nombre_colonia(cand_col, body_text)
+    # Extracción corregida de la colonia real
+    colonia = extraer_colonia_real(url, og_title, body_text)
 
     p_match = re.search(r'\$\s*([0-9]{1,3}(?:,[0-9]{3})+)', texto_combinado)
     precio = f"${p_match.group(1)}" if p_match else ""
@@ -250,17 +257,27 @@ def armar_ficha_local(url, og_title, og_desc, body_text, asesor_nombre):
         "hermosillo, son", "méxico", "mexico", "83", "c.p.", "código postal", "distribución"
     ]
     
-    superficie = []
+    superficie_texto = ""
     recamaras = []
     banos = []
     areas = []
     estac = []
     seguridad = []
+    equipamiento = []
+    servicios = []
     otros = []
 
     for l in lineas:
         l_low = l.lower().strip()
-        if l_low in ["venta", "renta", "traspaso", colonia.lower(), f"colonia {colonia.lower()}", "distribución"]:
+        
+        # Omitir la línea del sistema interno de Next con datos contradictorios
+        if "hermosillo" in l_low and ("terreno" in l_low or "construcción" in l_low or "m²" in l_low or "m2" in l_low):
+            medidas_limpias = re.findall(r'[0-9]+(?:\.[0-9]+)?\s*m[²2]\s*(?:de\s+)?(?:terreno|construcción)', l, re.IGNORECASE)
+            if medidas_limpias and not superficie_texto:
+                superficie_texto = " | ".join(medidas_limpias)
+            continue
+
+        if l_low in ["venta", "renta", "traspaso", colonia.lower(), f"colonia {colonia.lower()}", "distribución", "equipamiento:"]:
             continue
         if any(d in l_low for d in descartar) or l.startswith("$") or len(l) > 130:
             continue
@@ -271,15 +288,19 @@ def armar_ficha_local(url, og_title, og_desc, body_text, asesor_nombre):
         if not l_limp:
             continue
 
-        if "terreno:" in l_low or "construcción:" in l_low or "m²" in l_low or "m2" in l_low:
-            superficie.append(l_limp)
+        if ("terreno:" in l_low or "construcción:" in l_low) and not superficie_texto:
+            superficie_texto = l_limp
         elif "recámara" in l_low or "habitaci" in l_low:
             recamaras.append(l_limp)
         elif "baño" in l_low or "regadera" in l_low or "w.c" in l_low:
             banos.append(l_limp)
         elif "cochera" in l_low or "auto" in l_low or "estacionamiento" in l_low:
             estac.append(l_limp)
-        elif any(w in l_low for w in ["cámara", "camara", "sensor", "alarma", "reja", "seguridad", "vigilancia"]):
+        elif any(w in l_low for w in ["internet", "wifi", "agua incluida", "mantenimiento incluido"]):
+            servicios.append(l_limp)
+        elif any(w in l_low for w in ["minisplit", "clima", "parrilla", "refrigerador", "tv", "colchón", "amueblado", "equipado"]):
+            equipamiento.append(l_limp)
+        elif any(w in l_low for w in ["cámara", "camara", "sensor", "alarma", "reja", "seguridad"]):
             seguridad.append(l_limp)
         elif any(w in l_low for w in ["sala", "comedor", "cocina", "estancia", "patio", "lavandería", "lavanderia"]):
             areas.append(l_limp)
@@ -287,15 +308,11 @@ def armar_ficha_local(url, og_title, og_desc, body_text, asesor_nombre):
             if not any(op in l_limp.lower() for op in ["en venta", "en renta", "en traspaso"]):
                 otros.append(l_limp)
 
-    # Título limpio y sin repetición de frases
-    titulo_limpio = f"{emoji_tipo} {tipo.upper()} EN {operacion.upper()} EN {colonia.upper()}{' - ' + precio if precio else ''}"
-    titulo_limpio = re.sub(r'\b(CASA|DEPARTAMENTO|LOCAL|OFICINA|BODEGA)\s+EN\s+(RENTA|VENTA|TRASPASO)\s+EN\s+\1\s+EN\s+\2\b', r'\1 EN \2', titulo_limpio, flags=re.IGNORECASE)
-
-    copy = f"{titulo_limpio}\n"
+    copy = f"{emoji_tipo} {tipo.upper()} EN {operacion.upper()} EN {colonia.upper()}{' - ' + precio if precio else ''}\n"
     copy += "✨ ¡Excelente propiedad lista para habitar!\n\n"
 
-    if superficie:
-        copy += f"📐 {', '.join(superficie)}\n\n"
+    if superficie_texto:
+        copy += f"📐 Superficie: {superficie_texto}\n\n"
 
     for r in recamaras:
         copy += f"🛏️ {r}\n"
@@ -307,15 +324,20 @@ def armar_ficha_local(url, og_title, og_desc, body_text, asesor_nombre):
     if areas:
         copy += f"🏠 Espacios: {', '.join(areas)}\n"
 
+    if equipamiento:
+        copy += f"\n⚡ Equipamiento:\n"
+        for eq in equipamiento[:6]:
+            copy += f"• {eq}\n"
+
+    if servicios:
+        copy += f"\n📶 Servicios incluidos:\n"
+        for sv in servicios:
+            copy += f"• {sv}\n"
+
     if seguridad:
-        copy += f"\n🔒 Seguridad y equipamiento:\n"
+        copy += f"\n🔒 Seguridad:\n"
         for s in seguridad:
             copy += f"• {s}\n"
-
-    if otros:
-        copy += f"\n✨ Detalles adicionales:\n"
-        for o in otros[:5]:
-            copy += f"• {o}\n"
 
     copy += f"\n📲 Más información y citas por mensaje directo.\n\n*{asesor_nombre}* - Next Bienes Raíces"
 
@@ -328,52 +350,54 @@ def armar_ficha_local(url, og_title, og_desc, body_text, asesor_nombre):
     }
 
 # ==========================================
-# ESTRUCTURACIÓN CON IA (ANTI-REDUNDANCIA)
+# ESTRUCTURACIÓN CON IA
 # ==========================================
 
 def procesar_con_ia(url, og_title, og_desc, body_text, asesor_nombre):
     tipo_detectado, _ = detectar_tipo_inmueble(url, og_title, body_text)
+    colonia_detectada = extraer_colonia_real(url, og_title, body_text)
 
     if not API_KEY:
         return armar_ficha_local(url, og_title, og_desc, body_text, asesor_nombre)
 
     prompt = f"""
-    Eres un asesor inmobiliario profesional de élite. Redacta una ficha publicitaria directa, moderna y libre de duplicaciones para Facebook Marketplace.
+    Eres un asesor inmobiliario profesional de élite. Redacta una ficha publicitaria directa y atractiva para Facebook Marketplace.
 
     DATOS DE LA PROPIEDAD:
     URL: {url}
-    Título de la página: {og_title}
-    Tipo de inmueble identificado: {tipo_detectado}
+    Título original: {og_title}
+    Tipo de inmueble confirmado: {tipo_detectado}
+    Colonia real y confirmada: {colonia_detectada}
     Descripción: {og_desc}
     Texto:
     {body_text[:4000]}
 
     Asesor: {asesor_nombre}
 
-    REGLAS DE ORO (PREVENCIÓN DE DUPLICADOS EN EL TÍTULO):
-    1. LA COLONIA DEBE SER UN NOMBRE REAL: Extrae el nombre auténtico de la colonia, fraccionamiento o residencial (ej: Olivares, San Benito, La Cima, Balderrama). NUNCA pongas "CASA EN RENTA" o "HERMOSILLO" como si fuera una colonia. Si el título dice "Casa en renta en casa en renta", extrae la colonia real de la descripción.
-    2. CERO REPETICIÓN EN EL ENCABEZADO: El encabezado debe ser estrictamente:
-       [EMOJI_TIPO] [TIPO EN MAYÚSCULAS] EN [OPERACIÓN EN MAYÚSCULAS] EN [COLONIA EN MAYÚSCULAS] - [PRECIO]
-       PROHIBIDO duplicar palabras como "CASA EN RENTA EN CASA EN RENTA EN HERMOSILLO". Debe ser "🏠 CASA EN RENTA EN OLIVARES - $22,000".
-    3. CERO LÍNEAS ANTERIORES: No pongas nada antes de ese encabezado.
-    4. NO REPETIR LA COLONIA ABAJO DEL TÍTULO.
+    REGLAS DE ORO:
+    1. LA COLONIA ES: "{colonia_detectada}". NUNCA uses nombres erróneos del formulario como "Misión del Sol" si el título o URL dicen claramente "{colonia_detectada}".
+    2. ENCABEZADO EXACTO:
+       [EMOJI_TIPO] {tipo_detectado.upper()} EN [OPERACIÓN EN MAYÚSCULAS] EN {colonia_detectada.upper()} - [PRECIO]
+       PROHIBIDO duplicar palabras o frases.
+    3. CERO REPETICIÓN: No pongas antes ninguna línea suelta en minúsculas, ni pongas "📍 Colonia" abajo del título.
+    4. CERO LÍNEAS CRUDAS: Si en el texto dice "... en Hermosillo , ... , 60.00 m²...", pon únicamente "📐 Superficie: 60 m² construcción".
     5. CERO IVA NI FACTURAS.
 
     ESTRUCTURA EXACTA DE 'copy_publicitario':
-    [EMOJI_TIPO] [TIPO EN MAYÚSCULAS] EN [OPERACIÓN EN MAYÚSCULAS] EN [COLONIA EN MAYÚSCULAS] - [PRECIO]
+    [EMOJI_TIPO] {tipo_detectado.upper()} EN [OPERACIÓN EN MAYÚSCULAS] EN {colonia_detectada.upper()} - [PRECIO]
     ✨ [Frase breve gancho atractiva]
 
-    📐 Terreno: [m²] | Construcción: [m²] (si aplica)
+    📐 [Metros de terreno / construcción limpios si se indican]
 
     🛏️ [Cantidad de recámaras y detalles]
     🚿 [Cantidad de baños]
     🚗 [Cochera o estacionamiento]
-    🏠 Espacios: [Agrupa sala, comedor, cocina integral, estancia, patio, etc.]
+    🏠 Espacios: [Agrupa sala, comedor, cocina, etc.]
 
     (Si cuenta con equipamiento, servicios o seguridad):
-    ❄️ Climatización: [Minisplits, aire central, etc. si aplica]
-    🔒 Seguridad y equipamiento: [Cámaras, alarma, portón, etc. si aplica]
-    📶 Servicios incluidos: [Internet, agua, etc. si aplica]
+    ⚡ Equipamiento: [Minisplits, estufa, refrigerador, amueblado, etc.]
+    📶 Servicios incluidos: [Internet, agua, mantenimiento si aplica]
+    🔒 Seguridad: [Cámaras, portón eléctrico, etc. si aplica]
 
     📲 Más información y citas por mensaje directo.
 
@@ -381,7 +405,7 @@ def procesar_con_ia(url, og_title, og_desc, body_text, asesor_nombre):
 
     Devuelve un JSON estrictamente válido:
     {{
-      "colonia": "...",
+      "colonia": "{colonia_detectada}",
       "tipo_inmueble": "{tipo_detectado}",
       "operacion": "renta",
       "precio": "$...",
@@ -410,16 +434,14 @@ def procesar_con_ia(url, og_title, og_desc, body_text, asesor_nombre):
             copy = re.sub(r'([🏠🛏️🚿🚗❄️🌳🔹🔺])\s*[\*\•\-]?\s*([🏠🛏️🚿🚗❄️🌳])', r'\1', copy)
             copy = re.sub(r'^(?:casa|departamento|local|oficina|bodega|terreno)\s+en\s+(?:renta|venta|traspaso)[^\n]*\n+', '', copy, flags=re.IGNORECASE)
             
-            # Filtro de seguridad anti-duplicación en la primera línea
             primera_linea = copy.split("\n")[0]
-            primera_limpia = re.sub(r'(?i)\b(CASA|DEPARTAMENTO|LOCAL|OFICINA|BODEGA)\s+EN\s+(RENTA|VENTA|TRASPASO)\s+EN\s+\1\s+EN\s+\2\b', r'\1 EN \2', primera_linea)
+            primera_limpia = re.sub(r'(?i)\b(RENTA|VENTA|TRASPASO)\s+EN\s+\1\b', r'\1', primera_linea)
+            primera_limpia = re.sub(r'(?i)\bEN\s+COL\b', '', primera_limpia).strip()
             copy = copy.replace(primera_linea, primera_limpia, 1)
 
-            # Limpiar colonia para nombres de archivos
-            col_ia = data.get("colonia", "")
-            data["colonia"] = limpiar_nombre_colonia(col_ia, body_text)
-            data["copy_publicitario"] = copy.strip()
+            data["colonia"] = colonia_detectada
             data["tipo_inmueble"] = tipo_detectado
+            data["copy_publicitario"] = copy.strip()
             return data
     except Exception:
         pass
